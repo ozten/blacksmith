@@ -9,10 +9,10 @@ Every time you are about to call a tool, ask: "Is there another independent call
 
 **Mandatory parallel patterns — use these EVERY session:**
 - Session start: `bd ready` + `Read PROGRESS.txt` → ONE turn, TWO tool calls
-- Reading source + test: `Read class-foo.php` + `Read Test_Foo.php` → ONE turn
+- Reading source + test: `Read foo.rs` + `Read foo_test.rs` → ONE turn
 - Multiple greps: `Grep("pattern1")` + `Grep("pattern2")` → ONE turn
-- Session end: `Bash(composer lint:fix)` + `Bash(composer analyze)` → ONE turn (if they don't depend on each other's output)
-- Reading multiple related files: `Read template.php` + `Read meta-box.php` → ONE turn
+- Session end: `Bash(cargo clippy --fix)` + `Bash(cargo test)` → ONE turn (if they don't depend on each other's output)
+- Reading multiple related files: `Read config.rs` + `Read main.rs` → ONE turn
 
 **A session with ZERO parallel calls is a failure.** Target at least 5 turns with 2+ parallel calls per session.
 
@@ -31,7 +31,7 @@ Each session handles exactly ONE bead. The loop script handles picking the next 
 
 ## Context Loading
 
-The plugin architecture and test setup are documented in MEMORY.md — do NOT re-explore the codebase.
+The project architecture is documented in MEMORY.md — do NOT re-explore the codebase.
 Only read files you are about to modify. Do NOT launch explore subagents (this means NO `Task` tool with `subagent_type: Explore`).
 
 1. Run `bd ready` AND `Read PROGRESS.txt` in the SAME turn (Rule A — two parallel tool calls)
@@ -63,18 +63,17 @@ For the selected task (e.g., bd-X):
 
 3. **Implement**: Complete the task fully
    - Only read files you need to modify — architecture is in MEMORY.md
-   - Follow existing code patterns (see MEMORY.md "Plugin Architecture" and "Testing")
-   - New test classes must call `Tickets_Please::get_instance()->register_meta_fields()` in `setUp()`
+   - Follow existing code patterns (see MEMORY.md for architecture and testing conventions)
 
 4. **Verify** (use parallel calls per Rule A):
    ```bash
-   # Run full test suite FIRST, then lint+analyze in parallel:
-   cd wp/wp-content/plugins/tickets-please && php vendor/bin/phpunit
+   # Run full test suite FIRST, then lint in parallel:
+   cargo test
    # Then in ONE turn with TWO parallel Bash calls:
-   ./composer.sh lint:fix
-   ./composer.sh analyze
+   cargo clippy --fix --allow-dirty
+   cargo fmt --check
    ```
-   Run lint:fix and analyze exactly ONCE each. Do not repeat them.
+   Run clippy and fmt exactly ONCE each. Do not repeat them.
 
 5. **Finish** — write PROGRESS.txt and call bd-finish.sh, then STOP (Rule C):
    - **Write PROGRESS.txt** (overwrite, not append) with a short handoff note:
@@ -83,7 +82,7 @@ For the selected task (e.g., bd-X):
      - Suggested next tasks for the next session
    - **Run the finish script**:
      ```bash
-     ./bd-finish.sh bd-X "<brief description>" file1.php file2.php
+     ./bd-finish.sh bd-X "<brief description>" src/file1.rs src/file2.rs
      ```
      This handles: staging, committing, bd close, bd sync, auto-committing .beads/, appending to PROGRESS_LOG.txt, and git push — all in one command.
    - If no specific files to stage, omit the file list and it will stage all tracked modified files.
@@ -117,9 +116,8 @@ Use a specific reason: `too-large`, `tests-failing`, `lint-unfixable`, `missing-
 - Do not ask for clarification — make reasonable decisions
 - Do NOT launch explore/research subagents (NO `Task` with `subagent_type: Explore`) — the architecture is in MEMORY.md
 - Do NOT re-read files you already know from MEMORY.md
-- Use `./composer.sh <cmd>` from project root — there is no global `composer` command
 - Prefer small, atomic changes over large refactors
-- Always run `php vendor/bin/phpunit` before committing
-- Always run `./composer.sh lint:fix` then `./composer.sh analyze` before committing — exactly ONCE each
+- Always run `cargo test` before committing
+- Always run `cargo clippy --fix --allow-dirty` then `cargo fmt` before committing — exactly ONCE each
 - Always use `./bd-finish.sh` to close out — do NOT manually run git add/commit/push/bd close/bd sync
 - **EFFICIENCY**: Re-read Rules A, B, C above. Every text-only turn and every sequential-when-parallel tool call wastes your limited turn budget. Aim for 5+ parallel turns per session and 0 narration-only turns.

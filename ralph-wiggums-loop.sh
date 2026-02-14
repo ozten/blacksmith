@@ -1,5 +1,5 @@
 #!/bin/bash
-# ralph-wiggum-codex.sh
+# ralph-wiggums-loop.sh — autonomous agent harness
 
 MAX_ITERATIONS=${1:-25}
 PROMPT_FILE="PROMPT.md"
@@ -110,7 +110,7 @@ while [ $iteration -lt $MAX_ITERATIONS ]; do
         ZOMBIE_COUNT=$(echo "$ZOMBIES" | wc -l | tr -d ' ')
         echo "♻ Resetting $ZOMBIE_COUNT zombie IN_PROGRESS beads to open..."
         echo "$ZOMBIES" | while read -r zid; do
-            # Strip project prefix if present (e.g., TicketsPlease-abc1 -> abc1)
+            # Strip project prefix if present (e.g., project-abc1 -> abc1)
             short_id="${zid##*-}"
             bd update "$short_id" --status=open 2>/dev/null
             echo "  ↺ $zid → open"
@@ -151,7 +151,7 @@ ${PROMPT_CONTENT}"
         if [ $EXIT_CODE -eq 124 ]; then
             echo "  ✗ Session killed by watchdog (stale for ${STALE_TIMEOUT_MINUTES}m)"
         elif [ $EXIT_CODE -ne 0 ]; then
-            echo "  Codex exited with error code $EXIT_CODE"
+            echo "  Claude exited with error code $EXIT_CODE"
         fi
 
         # Check output size
