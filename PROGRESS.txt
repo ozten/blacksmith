@@ -1,23 +1,27 @@
-## Last Session: Configuration loading and CLI argument parsing (simple-agent-harness-utz)
+## Last Session: Implement session spawning and output capture (simple-agent-harness-d3v)
 
 ### Completed
-- Implemented HarnessConfig::load(path) — loads TOML file, returns defaults if file missing, errors on bad parse
-- Implemented HarnessConfig::apply_cli_overrides() — CLI flags override config file values when present
-- Added CliOverrides struct for extractable CLI override fields
-- Added ConfigError enum with Display + Error impls
-- Added Clone derive to all config structs
-- Wired up config loading in main.rs: load file → apply CLI overrides → use resolved config
-- Enhanced --dry-run to print all resolved configuration values
-- Added tempfile dev-dependency for test isolation
-- 10 unit tests covering: defaults, TOML loading (empty/partial/full), parse errors, CLI overrides (all/none/partial), full precedence chain
-- All tests pass, clippy clean, fmt applied
+- Implemented session.rs with full session lifecycle:
+  - `SessionResult` struct: exit_code, output_bytes, duration, output_file, pid
+  - `SessionError` enum: OutputFile, Spawn, Io variants with Display + Error impls
+  - `output_file_path()`: builds {output_dir}/{output_prefix}-{global_iteration}.jsonl
+  - `build_args()`: replaces {prompt} placeholders in agent args with actual prompt content
+  - `run_session()`: spawns agent subprocess, captures stdout+stderr to file, returns SessionResult
+    - Uses process_group(0) for clean process group management
+    - Uses Stdio::from(File) to redirect both stdout and stderr to the output file
+    - Reports exit code, output bytes (from file metadata), wall-clock duration, and PID
+- 12 tests covering:
+  - output_file_path construction (custom and default)
+  - build_args with/without/multiple placeholders
+  - run_session: echo command, stderr capture, nonzero exit, spawn failure, correct byte count, duration, bad output path
+- All 22 tests pass (10 config + 12 session), clippy clean, fmt applied
 
 ### Current State
-- Config loading is fully functional with correct precedence: CLI > file > defaults
-- main.rs loads config and applies overrides before any mode checks
-- Stub modules still have dead_code warnings (expected — they're scaffolded but not yet used)
+- Session spawning is fully functional and tested
+- Unblocks: runner loop (p0y), watchdog (fvr), retry policy (jr7), prompt prepend_commands (mxg)
+- Stub modules still have dead_code warnings (expected)
 
 ### Suggested Next Tasks
-- Implement main runner loop (simple-agent-harness-p0y) — depends on this config work, now unblocked
-- Implement signal handling (simple-agent-harness-7rx) — also unblocked
-- Implement session spawning (simple-agent-harness-d3v) — also unblocked
+- Implement main runner loop (simple-agent-harness-p0y) — now unblocked by session + config
+- Implement signal handling (simple-agent-harness-7rx) — already unblocked
+- Implement watchdog (simple-agent-harness-fvr) — now unblocked by session
