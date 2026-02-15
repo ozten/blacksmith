@@ -390,3 +390,26 @@
 - Create events and observations tables in database module (cl6) — P1, ready
 - Implement improve show/update/promote/dismiss/search commands (v25) — P2, now unblocked
 - Implement brief command with improvement context output (11h) — P1, now unblocked
+
+--- 2026-02-15 13:58:02 | simple-agent-harness-11h ---
+## Last Session: Implement brief command with improvement context output (simple-agent-harness-11h)
+
+### Completed
+- Created `src/brief.rs` with `handle_brief` function
+- `blacksmith brief` generates markdown snippet for prompt injection
+- Queries open improvements from DB, formats as: `## OPEN IMPROVEMENTS (N of M)` followed by `Rxx [category] title` lines
+- Returns no output if DB file doesn't exist or has no improvements
+- Added `db::count_improvements` helper to `src/db.rs`
+- Wired `Brief` subcommand in `src/main.rs` (top-level, not under metrics)
+- 5 new tests: no DB file, empty DB, shows open, excludes non-open, format matches PRD
+- All 183 tests pass, clippy clean (only pre-existing dead_code warnings), fmt applied
+
+### Current State
+- `blacksmith brief` is fully functional
+- Uses same `--output-dir` flag to locate DB as `improve` commands
+- Pre-existing dead_code warnings remain for unimplemented features
+
+### Suggested Next Tasks
+- Create events and observations tables (cl6) — P1, ready
+- Integrate brief injection into session loop pre-session step (2pg) — P1, now unblocked by this bead
+- Add quantitative metrics summary to brief command output (pcb) — P2, now unblocked by this bead

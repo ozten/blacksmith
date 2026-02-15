@@ -1,3 +1,4 @@
+mod brief;
 mod commit;
 mod config;
 mod db;
@@ -70,6 +71,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Generate performance brief for prompt injection
+    Brief,
     /// Manage improvement records (institutional memory)
     Improve {
         #[command(subcommand)]
@@ -148,6 +151,20 @@ async fn main() {
     tracing::debug!(?cli, "parsed CLI arguments");
 
     // Handle subcommands that don't need the full config
+    if let Some(Commands::Brief) = &cli.command {
+        let output_dir = cli
+            .output_dir
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let db_path = output_dir.join("blacksmith.db");
+
+        if let Err(e) = brief::handle_brief(&db_path) {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if let Some(Commands::Improve { action }) = &cli.command {
         // Resolve db path: output_dir/blacksmith.db
         // Use output_dir from CLI or default "."

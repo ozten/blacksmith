@@ -129,6 +129,11 @@ pub fn list_improvements(
     Ok(rows)
 }
 
+/// Count total improvements (all statuses).
+pub fn count_improvements(conn: &Connection) -> Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM improvements", [], |row| row.get(0))
+}
+
 fn map_improvement(row: &rusqlite::Row) -> Result<Improvement> {
     Ok(Improvement {
         ref_id: row.get(0)?,
