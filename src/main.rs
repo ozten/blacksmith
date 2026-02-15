@@ -18,6 +18,7 @@ mod session;
 mod signals;
 mod status;
 mod watchdog;
+mod worktree;
 
 use clap::{Parser, Subcommand};
 use config::{CliOverrides, HarnessConfig};
