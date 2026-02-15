@@ -1,0 +1,16 @@
+[package]
+name = "simple-agent-harness"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust CLI tool that runs an AI coding agent in a supervised loop"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+nix = { version = "0.29", features = ["signal", "process"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"

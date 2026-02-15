@@ -1,0 +1,20 @@
+## Last Session: Scaffold Rust project (simple-agent-harness-ewc)
+
+### Completed
+- Created Cargo.toml with all dependencies (clap, serde, toml, tokio, nix, chrono, serde_json, tracing, tracing-subscriber)
+- Created src/main.rs with clap CLI that compiles, prints help, and has --dry-run/--status stubs
+- Created stub modules: config.rs, runner.rs, session.rs, watchdog.rs, retry.rs, metrics.rs, signals.rs, hooks.rs
+- config.rs has full deserialization structs with defaults matching harness.toml spec
+- Created default harness.toml with all config sections from the PRD
+- cargo build, cargo test, cargo clippy, cargo fmt all pass cleanly
+
+### Current State
+- Project skeleton is complete and compiles
+- CLI accepts all flags from the PRD spec (config, prompt, output-dir, timeout, retries, dry-run, verbose, quiet, status, max_iterations positional arg)
+- All stub modules have empty structs ready for implementation
+- No actual logic implemented yet — just the skeleton
+
+### Suggested Next Tasks
+- Implement configuration loading (config.rs): parse harness.toml, merge CLI overrides
+- Implement CLI argument parsing integration with config (main.rs)
+- These are covered by the next bead: simple-agent-harness-utz (P1, was blocked by this scaffold task)
