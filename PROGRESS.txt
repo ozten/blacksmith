@@ -1,20 +1,24 @@
-## Last Session: Verify import graph parser (2026-02-15)
+## Last Session: Add module boundary detection from file tree (2026-02-15)
 
 ### What Was Done
-- Verified bead simple-agent-harness-4a1 (Add codebase import graph parser) was already fully implemented
-- src/import_graph.rs exists with complete implementation: build_import_graph(), parse_use_crate(), parse_mod_declaration(), resolve_module_path(), resolve_mod_declaration()
-- Module already declared in main.rs (line 15)
-- 22 unit tests all pass covering: empty project, single file, use crate::, mod declarations, subdirectories, pub use re-exports, nested paths, comments, deduplication, group imports, glob imports, parse helpers, nonexistent imports
-- Full test suite: 959 passed, 0 failed
-- Applied cargo fmt fix in config.rs (pre-existing formatting issue)
+- Implemented bead simple-agent-harness-75u: module boundary detection
+- Created src/module_detect.rs with:
+  - `Module` struct (name, root_path, files, has_entry_point, entry_point, submodules)
+  - `detect_modules(src_root, rs_files)` — groups .rs files by parent directory into logical modules
+  - `detect_modules_from_repo(repo_root)` — convenience wrapper that collects files and detects modules
+  - `module_name_from_path()` — derives module name from directory path (e.g., "adapters::claude")
+  - `find_entry_point()` — detects mod.rs/lib.rs/main.rs entry points
+  - `detect_submodules()` — finds direct child submodule directories
+- Added `mod module_detect;` to main.rs
+- 11 unit tests all pass covering: empty project, single file, sibling modules, subdir with mod.rs, nested submodules, submodule detection, no entry point, lib.rs entry point, name derivation, sorted files, integration with import_graph
 
 ### Current State
-- Compilation clean (only pre-existing dead_code warnings in expansion_event/file_resolution/intent modules)
-- All 959 tests pass
-- import_graph module is ready for use by downstream beads (cycle detection, fan-in analysis, etc.)
+- Compilation clean (only pre-existing dead_code warnings)
+- Full test suite: 970 passed, 0 failed, 1 ignored
+- module_detect is ready for downstream beads (cycle detection, boundary violations, public API extraction)
 
 ### Suggested Next Tasks
-- simple-agent-harness-75u (P1): Add module boundary detection from file tree (blocked by 4a1, now unblocked)
-- simple-agent-harness-ikw (P1): Implement file resolution from intent concepts (blocked by 4a1, now unblocked)
-- simple-agent-harness-33k (P2): Add circular dependency detection for modules
-- simple-agent-harness-34d (P3): Add architecture agent configuration knobs
+- simple-agent-harness-ikw (P1): Implement file resolution from intent concepts (now unblocked)
+- simple-agent-harness-33k (P2): Add circular dependency detection for modules (now unblocked)
+- simple-agent-harness-aol (P2): Add boundary violation detector for module imports (now unblocked)
+- simple-agent-harness-ehy (P2): Add public API surface extractor for modules (now unblocked)

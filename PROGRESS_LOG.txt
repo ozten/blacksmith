@@ -2295,3 +2295,29 @@
 - simple-agent-harness-ikw (P1): Implement file resolution from intent concepts (blocked by 4a1, now unblocked)
 - simple-agent-harness-33k (P2): Add circular dependency detection for modules
 - simple-agent-harness-34d (P3): Add architecture agent configuration knobs
+
+--- 2026-02-15 23:58:33 | simple-agent-harness-75u ---
+## Last Session: Add module boundary detection from file tree (2026-02-15)
+
+### What Was Done
+- Implemented bead simple-agent-harness-75u: module boundary detection
+- Created src/module_detect.rs with:
+  - `Module` struct (name, root_path, files, has_entry_point, entry_point, submodules)
+  - `detect_modules(src_root, rs_files)` — groups .rs files by parent directory into logical modules
+  - `detect_modules_from_repo(repo_root)` — convenience wrapper that collects files and detects modules
+  - `module_name_from_path()` — derives module name from directory path (e.g., "adapters::claude")
+  - `find_entry_point()` — detects mod.rs/lib.rs/main.rs entry points
+  - `detect_submodules()` — finds direct child submodule directories
+- Added `mod module_detect;` to main.rs
+- 11 unit tests all pass covering: empty project, single file, sibling modules, subdir with mod.rs, nested submodules, submodule detection, no entry point, lib.rs entry point, name derivation, sorted files, integration with import_graph
+
+### Current State
+- Compilation clean (only pre-existing dead_code warnings)
+- Full test suite: 970 passed, 0 failed, 1 ignored
+- module_detect is ready for downstream beads (cycle detection, boundary violations, public API extraction)
+
+### Suggested Next Tasks
+- simple-agent-harness-ikw (P1): Implement file resolution from intent concepts (now unblocked)
+- simple-agent-harness-33k (P2): Add circular dependency detection for modules (now unblocked)
+- simple-agent-harness-aol (P2): Add boundary violation detector for module imports (now unblocked)
+- simple-agent-harness-ehy (P2): Add public API surface extractor for modules (now unblocked)

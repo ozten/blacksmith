@@ -20,6 +20,7 @@ mod intent;
 mod metrics;
 mod metrics_cmd;
 mod migrate;
+mod module_detect;
 mod pool;
 mod prompt;
 mod ratelimit;
