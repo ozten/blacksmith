@@ -1,3 +1,4 @@
+mod adapters;
 mod brief;
 mod commit;
 mod config;
