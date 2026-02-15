@@ -646,6 +646,19 @@ pub fn worker_assignments_by_status(
     Ok(rows)
 }
 
+/// List all active worker assignments (status = 'coding' or 'integrating').
+pub fn active_worker_assignments(conn: &Connection) -> Result<Vec<WorkerAssignment>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, worker_id, bead_id, worktree_path, status, affected_globs, \
+         started_at, completed_at, failure_notes FROM worker_assignments \
+         WHERE status IN ('coding', 'integrating') ORDER BY worker_id ASC",
+    )?;
+    let rows = stmt
+        .query_map([], map_worker_assignment)?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 fn map_worker_assignment(row: &rusqlite::Row) -> Result<WorkerAssignment> {
     Ok(WorkerAssignment {
         id: row.get(0)?,
@@ -1982,6 +1995,33 @@ mod tests {
         let (_dir, conn) = test_db();
         let wa = get_worker_assignment(&conn, 999).unwrap();
         assert!(wa.is_none());
+    }
+
+    #[test]
+    fn active_worker_assignments_query() {
+        let (_dir, conn) = test_db();
+
+        insert_worker_assignment(&conn, 0, "beads-a", "/tmp/wt-0", "coding", None).unwrap();
+        insert_worker_assignment(&conn, 1, "beads-b", "/tmp/wt-1", "integrating", None).unwrap();
+        insert_worker_assignment(&conn, 2, "beads-c", "/tmp/wt-2", "completed", None).unwrap();
+        insert_worker_assignment(&conn, 3, "beads-d", "/tmp/wt-3", "failed", None).unwrap();
+
+        let active = active_worker_assignments(&conn).unwrap();
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].worker_id, 0);
+        assert_eq!(active[0].status, "coding");
+        assert_eq!(active[1].worker_id, 1);
+        assert_eq!(active[1].status, "integrating");
+    }
+
+    #[test]
+    fn active_worker_assignments_empty() {
+        let (_dir, conn) = test_db();
+
+        insert_worker_assignment(&conn, 0, "beads-a", "/tmp/wt-0", "completed", None).unwrap();
+
+        let active = active_worker_assignments(&conn).unwrap();
+        assert!(active.is_empty());
     }
 
     // ── Task File Changes tests ─────────────────────────────────────────

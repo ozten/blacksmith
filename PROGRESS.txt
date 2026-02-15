@@ -1,30 +1,27 @@
-## Last Session: Implement dynamic affected set expansion via .blacksmith-expand (d2q)
+## Last Session: Implement blacksmith workers status and kill commands (wdo)
 
 ### Completed
-- Implemented `.blacksmith-expand` file watching in the coordinator loop
-- When a worker writes `.blacksmith-expand` in its worktree, the coordinator reads new file globs (one per line), merges them with existing affected_globs in the DB, and deletes the file
-- Expansion is always granted (optimistic concurrency per spec) — conflicts resolved at integration time
-- Comments (lines starting with #) and empty lines in expand files are ignored
-- Duplicate globs are not added twice during merge
-- Updated `build_in_progress_list` to read affected_globs from the database, so the scheduler uses accurate (including dynamically expanded) affected sets for conflict detection
-- Added `update_worker_assignment_affected_globs` DB function
-- Added `worker_assignment_id` and `worker_worktree_path` accessor methods to WorkerPool
-- Added `set_worker_state_for_test` helper to WorkerPool for test setup
-- Added 7 new tests (670 total passing):
-  - coordinator: test_parse_comma_separated_globs
-  - coordinator: test_expand_file_processing (full end-to-end)
-  - coordinator: test_expand_file_no_duplicates
-  - coordinator: test_expand_file_empty_file_ignored
-  - coordinator: test_expand_file_comments_ignored
-  - coordinator: test_no_expand_file_is_noop
-  - coordinator: test_build_in_progress_list_empty_pool (updated to use DB)
+- Added `blacksmith workers status` CLI subcommand that queries the DB for active worker assignments (status = 'coding' or 'integrating') and displays a formatted table with: worker ID, assignment ID, bead ID, status, elapsed time, and worktree path
+- Added `blacksmith workers kill <worker-id>` CLI subcommand that:
+  - Finds active assignments for the given worker ID
+  - Searches for agent processes via `lsof` and `pgrep` (fallback) in the worker's worktree
+  - Sends SIGTERM to process groups or individual processes
+  - Marks the DB assignment as 'failed' with "killed by user" notes
+- Added `active_worker_assignments()` DB function to query coding/integrating assignments
+- Added `Workers` subcommand with `Status` and `Kill` actions to the CLI
+- Added 6 new tests (676 total passing):
+  - db: active_worker_assignments_query
+  - db: active_worker_assignments_empty
+  - main: test_workers_status_empty
+  - main: test_workers_status_with_active
+  - main: test_workers_kill_no_active_assignment
+  - main: test_workers_kill_marks_as_failed
 
 ### Key Files Modified
-- `src/coordinator.rs` — expand file processing, updated build_in_progress_list
-- `src/db.rs` — added update_worker_assignment_affected_globs
-- `src/pool.rs` — added worker_assignment_id, worker_worktree_path, set_worker_state_for_test
+- `src/main.rs` — Workers subcommand, WorkersAction enum, handle_workers_status, handle_workers_kill
+- `src/db.rs` — active_worker_assignments function
 
 ### Suggested Next Tasks
-- **wdo**: Implement blacksmith workers status and kill commands (P2)
 - **3su**: Implement periodic reconciliation with full test suite (P2)
 - **dgh**: Implement session-to-bead attribution (P2)
+- **7ed**: Implement blacksmith integration log and retry commands (P2)

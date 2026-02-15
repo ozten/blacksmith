@@ -114,6 +114,11 @@ enum Commands {
         #[arg(long)]
         consolidate: bool,
     },
+    /// Manage concurrent agent workers
+    Workers {
+        #[command(subcommand)]
+        action: WorkersAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -165,6 +170,17 @@ enum MetricsAction {
         /// Filter to a specific session number
         #[arg(long)]
         session: Option<i64>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum WorkersAction {
+    /// Show current worker pool state
+    Status,
+    /// Kill a specific worker by its worker ID
+    Kill {
+        /// Worker ID to kill (from the worker_id column)
+        worker_id: i64,
     },
 }
 
@@ -259,6 +275,167 @@ impl Cli {
             retries: self.retries,
         }
     }
+}
+
+/// Handle `blacksmith workers status` — show current worker pool state.
+fn handle_workers_status(db_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = db::open_or_create(db_path)?;
+    let assignments = db::active_worker_assignments(&conn)?;
+
+    if assignments.is_empty() {
+        println!("No active workers.");
+        return Ok(());
+    }
+
+    // Print header
+    println!(
+        "{:<10} {:<8} {:<24} {:<14} {:<20} WORKTREE",
+        "WORKER", "ASSIGN", "BEAD", "STATUS", "STARTED"
+    );
+    println!("{}", "-".repeat(96));
+
+    for wa in &assignments {
+        // Calculate elapsed time from started_at
+        let elapsed = chrono::DateTime::parse_from_rfc3339(&wa.started_at)
+            .ok()
+            .map(|start| {
+                let duration = chrono::Utc::now() - start.with_timezone(&chrono::Utc);
+                let secs = duration.num_seconds().max(0);
+                let hours = secs / 3600;
+                let mins = (secs % 3600) / 60;
+                if hours > 0 {
+                    format!("{}h {}m", hours, mins)
+                } else {
+                    format!("{}m", mins)
+                }
+            })
+            .unwrap_or_else(|| wa.started_at.clone());
+
+        println!(
+            "{:<10} {:<8} {:<24} {:<14} {:<20} {}",
+            wa.worker_id, wa.id, wa.bead_id, wa.status, elapsed, wa.worktree_path
+        );
+    }
+
+    println!("\n{} active worker(s).", assignments.len());
+    Ok(())
+}
+
+/// Handle `blacksmith workers kill <worker-id>` — kill a specific worker process.
+///
+/// Finds active worker assignments for the given worker_id, locates agent processes
+/// running in the worker's worktree directory, and sends SIGTERM to their process groups.
+fn handle_workers_kill(
+    db_path: &std::path::Path,
+    worker_id: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = db::open_or_create(db_path)?;
+    let assignments = db::active_worker_assignments(&conn)?;
+
+    let worker_assignments: Vec<_> = assignments
+        .iter()
+        .filter(|wa| wa.worker_id == worker_id)
+        .collect();
+
+    if worker_assignments.is_empty() {
+        eprintln!("No active assignment found for worker {worker_id}.");
+        std::process::exit(1);
+    }
+
+    for wa in &worker_assignments {
+        let worktree = &wa.worktree_path;
+        println!(
+            "Killing worker {} (bead: {}, worktree: {})...",
+            worker_id, wa.bead_id, worktree
+        );
+
+        // Find processes whose CWD is the worktree using lsof
+        let output = std::process::Command::new("lsof")
+            .args(["+D", worktree, "-t"])
+            .output();
+
+        let mut killed = false;
+
+        if let Ok(output) = output {
+            let pids_str = String::from_utf8_lossy(&output.stdout);
+            for pid_str in pids_str.lines() {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    // Don't kill ourselves
+                    if pid == std::process::id() as i32 {
+                        continue;
+                    }
+                    // Send SIGTERM to the process group
+                    match nix::sys::signal::killpg(
+                        nix::unistd::Pid::from_raw(pid),
+                        nix::sys::signal::Signal::SIGTERM,
+                    ) {
+                        Ok(()) => {
+                            println!("  Sent SIGTERM to process group (PID {pid})");
+                            killed = true;
+                        }
+                        Err(nix::errno::Errno::ESRCH) => {
+                            // Process doesn't exist, try next
+                        }
+                        Err(nix::errno::Errno::EPERM) => {
+                            // Not a process group leader, try killing the process directly
+                            match nix::sys::signal::kill(
+                                nix::unistd::Pid::from_raw(pid),
+                                nix::sys::signal::Signal::SIGTERM,
+                            ) {
+                                Ok(()) => {
+                                    println!("  Sent SIGTERM to PID {pid}");
+                                    killed = true;
+                                }
+                                Err(e) => {
+                                    eprintln!("  Failed to kill PID {pid}: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  Failed to kill process group {pid}: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        if !killed {
+            // Fallback: try to find processes via /proc or pgrep with the worktree as argument
+            let pgrep = std::process::Command::new("pgrep")
+                .args(["-f", worktree])
+                .output();
+
+            if let Ok(output) = pgrep {
+                let pids_str = String::from_utf8_lossy(&output.stdout);
+                for pid_str in pids_str.lines() {
+                    if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                        if pid == std::process::id() as i32 {
+                            continue;
+                        }
+                        if nix::sys::signal::kill(
+                            nix::unistd::Pid::from_raw(pid),
+                            nix::sys::signal::Signal::SIGTERM,
+                        )
+                        .is_ok()
+                        {
+                            println!("  Sent SIGTERM to PID {pid}");
+                            killed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !killed {
+            println!("  No running process found for worker {worker_id}.");
+        }
+
+        // Update the DB assignment to 'failed'
+        db::update_worker_assignment_status(&conn, wa.id, "failed", Some("killed by user"))?;
+        println!("  Marked assignment {} as failed.", wa.id);
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -362,6 +539,28 @@ async fn main() {
         if let Err(e) = migrate::consolidate(&config_for_migrate, &dd) {
             eprintln!("Migration failed: {e}");
             std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(Commands::Workers { action }) = &cli.command {
+        let config_for_workers = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = data_dir::DataDir::new(&config_for_workers.storage.data_dir);
+        let db_path = dd.db();
+
+        match action {
+            WorkersAction::Status => {
+                if let Err(e) = handle_workers_status(&db_path) {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            WorkersAction::Kill { worker_id } => {
+                if let Err(e) = handle_workers_kill(&db_path, *worker_id) {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         return;
     }
@@ -660,5 +859,87 @@ async fn main() {
             reason = ?summary.exit_reason,
             "loop finished"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_workers_status_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+        drop(conn);
+
+        // Should succeed with "No active workers." message
+        let result = handle_workers_status(&db_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_workers_status_with_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        db::insert_worker_assignment(&conn, 0, "beads-abc", "/tmp/wt-0", "coding", None).unwrap();
+        db::insert_worker_assignment(&conn, 1, "beads-def", "/tmp/wt-1", "integrating", None)
+            .unwrap();
+        drop(conn);
+
+        let result = handle_workers_status(&db_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_workers_kill_no_active_assignment() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        // Insert a completed worker — not active
+        db::insert_worker_assignment(&conn, 0, "beads-done", "/tmp/wt-0", "completed", None)
+            .unwrap();
+        drop(conn);
+
+        // Should fail because no active assignment for worker 0
+        // (handle_workers_kill calls process::exit, so we test the DB function directly)
+        let conn2 = db::open_or_create(&db_path).unwrap();
+        let active = db::active_worker_assignments(&conn2).unwrap();
+        let worker_0: Vec<_> = active.iter().filter(|wa| wa.worker_id == 0).collect();
+        assert!(worker_0.is_empty());
+    }
+
+    #[test]
+    fn test_workers_kill_marks_as_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        // Insert a coding worker pointing to a nonexistent worktree (no process to find)
+        let assignment_id = db::insert_worker_assignment(
+            &conn,
+            0,
+            "beads-kill-test",
+            "/tmp/nonexistent-worktree-kill-test",
+            "coding",
+            None,
+        )
+        .unwrap();
+        drop(conn);
+
+        // Call handle_workers_kill — the process search will find nothing but
+        // it should still mark the assignment as failed
+        let result = handle_workers_kill(&db_path, 0);
+        assert!(result.is_ok());
+
+        let conn2 = db::open_or_create(&db_path).unwrap();
+        let wa = db::get_worker_assignment(&conn2, assignment_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wa.status, "failed");
+        assert_eq!(wa.failure_notes, Some("killed by user".to_string()));
     }
 }

@@ -1641,3 +1641,32 @@
 - **wdo**: Implement blacksmith workers status and kill commands (P2)
 - **3su**: Implement periodic reconciliation with full test suite (P2)
 - **dgh**: Implement session-to-bead attribution (P2)
+
+--- 2026-02-15 17:28:51 | simple-agent-harness-wdo ---
+## Last Session: Implement blacksmith workers status and kill commands (wdo)
+
+### Completed
+- Added `blacksmith workers status` CLI subcommand that queries the DB for active worker assignments (status = 'coding' or 'integrating') and displays a formatted table with: worker ID, assignment ID, bead ID, status, elapsed time, and worktree path
+- Added `blacksmith workers kill <worker-id>` CLI subcommand that:
+  - Finds active assignments for the given worker ID
+  - Searches for agent processes via `lsof` and `pgrep` (fallback) in the worker's worktree
+  - Sends SIGTERM to process groups or individual processes
+  - Marks the DB assignment as 'failed' with "killed by user" notes
+- Added `active_worker_assignments()` DB function to query coding/integrating assignments
+- Added `Workers` subcommand with `Status` and `Kill` actions to the CLI
+- Added 6 new tests (676 total passing):
+  - db: active_worker_assignments_query
+  - db: active_worker_assignments_empty
+  - main: test_workers_status_empty
+  - main: test_workers_status_with_active
+  - main: test_workers_kill_no_active_assignment
+  - main: test_workers_kill_marks_as_failed
+
+### Key Files Modified
+- `src/main.rs` — Workers subcommand, WorkersAction enum, handle_workers_status, handle_workers_kill
+- `src/db.rs` — active_worker_assignments function
+
+### Suggested Next Tasks
+- **3su**: Implement periodic reconciliation with full test suite (P2)
+- **dgh**: Implement session-to-bead attribution (P2)
+- **7ed**: Implement blacksmith integration log and retry commands (P2)
