@@ -2,6 +2,7 @@
 ///
 /// The runner orchestrates the main iteration loop, coordinating
 /// session spawning, watchdog monitoring, retry logic, and signal handling.
+use crate::adapters;
 use crate::commit;
 use crate::config::HarnessConfig;
 use crate::data_dir::DataDir;
@@ -127,6 +128,12 @@ pub async fn run(
             }
         })
         .collect();
+
+    // Create adapter for JSONL metric extraction
+    let adapter_name =
+        adapters::resolve_adapter_name(config.agent.adapter.as_deref(), &config.agent.command);
+    let adapter = adapters::create_adapter(adapter_name);
+    tracing::info!(adapter = adapter_name, "using agent adapter");
 
     tracing::info!(max_iterations, global_iteration, "starting iteration loop");
 
@@ -300,6 +307,7 @@ pub async fn run(
                         &output_path,
                         result.exit_code,
                         &extraction_rules,
+                        adapter.as_ref(),
                     ) {
                         Ok(m) => {
                             tracing::info!(
@@ -446,6 +454,7 @@ pub async fn run(
                         &output_path,
                         result.exit_code,
                         &extraction_rules,
+                        adapter.as_ref(),
                     ) {
                         tracing::warn!(
                             error = %e,
@@ -1424,6 +1433,7 @@ printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,
         let mut config = test_config(dir.path(), script.to_str().unwrap(), vec![]);
         config.session.max_iterations = 1;
         config.backoff.initial_delay_secs = 0;
+        config.agent.adapter = Some("claude".to_string()); // Script outputs Claude JSONL format
 
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 

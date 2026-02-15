@@ -1,30 +1,32 @@
-## Last Session: Add adapter config field and auto-detection from command name (6hk)
+## Last Session: Wire adapter into ingest pipeline replacing hardcoded parsing (9jw)
 
 ### Completed
-- Added `adapter: Option<String>` field to `AgentConfig` in src/config.rs
-  - Defaults to None (auto-detect from command name)
-  - Deserializes from TOML `[agent] adapter = "..."` config
-- Created src/adapters/raw.rs with `RawAdapter` implementing AgentAdapter:
-  - Returns no built-in metrics (configurable rules only)
-  - All source types return raw file lines unchanged
-  - 5 tests for the raw adapter
-- Added adapter registry/factory functions to src/adapters/mod.rs:
-  - `detect_adapter_name(command)` — matches command basename against known agents, falls back to "raw"
-  - `resolve_adapter_name(explicit, command)` — uses explicit override if provided, else auto-detects
-  - `create_adapter(name)` — factory returning boxed AgentAdapter trait object
-  - Known adapters: claude, codex, opencode, aider; unknown falls back to raw
-  - 18 tests covering detection, resolution, creation, and config integration
-- Added 3 config tests for adapter field parsing
-- Updated all AgentConfig struct literals in session.rs and runner.rs to include adapter: None
-- All 442 tests pass, clippy clean, fmt clean
+- Refactored src/ingest.rs to use AgentAdapter trait instead of hardcoded Claude JSONL parsing
+  - Removed: SessionMetrics, SessionText, extract_metrics, extract_metrics_and_text,
+    collect_assistant_text, count_assistant_turn, extract_result, write_events,
+    old apply_rules, build_observation_data_with_rules
+  - Added: IngestResult struct (turns_total, cost_estimate_usd, session_duration_ms)
+  - Added: value_to_event_string, source_str_to_enum, apply_rules_via_adapter,
+    apply_single_rule, new build_observation_data
+  - Updated ingest_session and ingest_session_with_rules to accept &dyn AgentAdapter
+  - Built-in metrics now come from adapter.extract_builtin_metrics()
+  - Configurable extraction rules now use adapter.lines_for_source() with source caching
+- Updated src/runner.rs to create adapter at startup via resolve_adapter_name/create_adapter
+  - Passes adapter.as_ref() to both ingest_session_with_rules calls
+- Updated src/metrics_cmd.rs handle_log to create ClaudeAdapter and pass to ingest_session
+  - Changed field access from metrics.* to result.*
+- Fixed test_run_ingests_jsonl_metrics_to_db: set adapter="claude" since test script
+  auto-detects as "raw" but outputs Claude JSONL format
+- All 433 tests pass, clippy clean, fmt clean
 
 ### Current State
-- The adapter config and detection pipeline is complete
-- `create_adapter` currently returns ClaudeAdapter for "claude" and RawAdapter for everything else
-- Future adapter implementations (codex, opencode, aider) will be added to the match in create_adapter
-- Dead code warnings on adapters module are expected until wiring happens (bead 9jw)
+- Ingest pipeline is fully adapter-driven; no hardcoded Claude parsing remains
+- apply_single_rule extracted for unit testing without adapter dependency
+- Source caching in apply_rules_via_adapter avoids re-parsing per rule
+- IngestResult is lightweight; detailed metrics live in adapter's Vec<(String, Value)>
 
 ### Suggested Next Tasks
-- **9jw**: Wire adapter into ingest pipeline replacing hardcoded parsing (now unblocked)
+- **ee2**: Graceful metric degradation when adapter returns partial data (now unblocked)
+- **hhv**: Metrics reingest command (now unblocked)
 - **zl7**: Add coordinator SQLite tables for multi-agent state (independent P1)
 - **mjx**: Implement affected set parsing and glob overlap detection (independent P1)

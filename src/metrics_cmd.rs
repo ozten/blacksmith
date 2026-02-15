@@ -1,3 +1,4 @@
+use crate::adapters;
 use crate::config::MetricsTargetsConfig;
 use crate::db;
 use crate::ingest;
@@ -20,15 +21,17 @@ pub fn handle_log(db_path: &Path, file: &Path) -> Result<(), String> {
         )
         .map_err(|e| format!("Failed to determine session number: {e}"))?;
 
-    let metrics = ingest::ingest_session(&conn, session, file, None)
+    // Use Claude adapter by default for `metrics log` (most common format)
+    let adapter = adapters::claude::ClaudeAdapter::new();
+    let result = ingest::ingest_session(&conn, session, file, None, &adapter)
         .map_err(|e| format!("Ingestion failed: {e}"))?;
 
     println!("Ingested session {session} from {}", file.display());
     println!(
         "  turns: {}  cost: ${:.2}  duration: {}s",
-        metrics.turns_total,
-        metrics.cost_estimate_usd,
-        metrics.session_duration_ms / 1000
+        result.turns_total,
+        result.cost_estimate_usd,
+        result.session_duration_ms / 1000
     );
 
     Ok(())
