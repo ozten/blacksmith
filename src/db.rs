@@ -379,6 +379,85 @@ pub fn recent_observations(conn: &Connection, limit: i64) -> Result<Vec<Observat
     Ok(rows)
 }
 
+/// Rebuild all observations from events.
+///
+/// Drops all rows from the observations table, then for each distinct session
+/// in the events table, aggregates event (kind, value) pairs into a JSON object
+/// and upserts an observation. Returns the number of sessions rebuilt.
+pub fn rebuild_observations(conn: &Connection) -> Result<u64> {
+    // Delete all existing observations
+    conn.execute("DELETE FROM observations", [])?;
+
+    // Get distinct sessions from events
+    let mut sessions_stmt =
+        conn.prepare("SELECT DISTINCT session FROM events ORDER BY session ASC")?;
+    let sessions: Vec<i64> = sessions_stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut count = 0u64;
+    for session in sessions {
+        // Get all events for this session
+        let events = events_by_session(conn, session)?;
+        if events.is_empty() {
+            continue;
+        }
+
+        // Use the timestamp from the first event
+        let ts = &events[0].ts;
+
+        // Build observation data JSON from events
+        let mut map = serde_json::Map::new();
+        for event in &events {
+            if let Some(ref value) = event.value {
+                // Try to parse as number first for cleaner JSON
+                if let Ok(n) = value.parse::<i64>() {
+                    map.insert(event.kind.clone(), serde_json::Value::Number(n.into()));
+                } else if let Ok(n) = value.parse::<f64>() {
+                    map.insert(
+                        event.kind.clone(),
+                        serde_json::Number::from_f64(n)
+                            .map(serde_json::Value::Number)
+                            .unwrap_or(serde_json::Value::String(value.clone())),
+                    );
+                } else if value == "true" {
+                    map.insert(event.kind.clone(), serde_json::Value::Bool(true));
+                } else if value == "false" {
+                    map.insert(event.kind.clone(), serde_json::Value::Bool(false));
+                } else {
+                    // Try parsing as JSON (for arrays), fall back to string
+                    match serde_json::from_str::<serde_json::Value>(value) {
+                        Ok(v) if v.is_array() => {
+                            map.insert(event.kind.clone(), v);
+                        }
+                        _ => {
+                            map.insert(
+                                event.kind.clone(),
+                                serde_json::Value::String(value.clone()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let data = serde_json::Value::Object(map).to_string();
+
+        // Extract duration from session.duration_ms event if present
+        let duration_secs = events
+            .iter()
+            .find(|e| e.kind == "session.duration_ms")
+            .and_then(|e| e.value.as_ref())
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|ms| ms / 1000);
+
+        upsert_observation(conn, session, ts, duration_secs, None, &data)?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 fn map_observation(row: &rusqlite::Row) -> Result<Observation> {
     Ok(Observation {
         session: row.get(0)?,
@@ -1212,5 +1291,165 @@ mod tests {
         assert!(indexes.contains(&"idx_events_session".to_string()));
         assert!(indexes.contains(&"idx_events_kind".to_string()));
         assert!(indexes.contains(&"idx_events_ts".to_string()));
+    }
+
+    // ── Rebuild observations tests ─────────────────────────────────────
+
+    #[test]
+    fn rebuild_observations_empty_events() {
+        let (_dir, conn) = test_db();
+        let count = rebuild_observations(&conn).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn rebuild_observations_from_events() {
+        let (_dir, conn) = test_db();
+
+        // Insert events for session 1
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("42"),
+            None,
+        )
+        .unwrap();
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "cost.estimate_usd",
+            Some("1.500000"),
+            None,
+        )
+        .unwrap();
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "session.duration_ms",
+            Some("120000"),
+            None,
+        )
+        .unwrap();
+
+        // Insert events for session 2
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T11:00:00Z",
+            2,
+            "turns.total",
+            Some("30"),
+            None,
+        )
+        .unwrap();
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T11:00:00Z",
+            2,
+            "session.duration_ms",
+            Some("90000"),
+            None,
+        )
+        .unwrap();
+
+        let count = rebuild_observations(&conn).unwrap();
+        assert_eq!(count, 2);
+
+        // Verify session 1 observation
+        let obs1 = get_observation(&conn, 1).unwrap().unwrap();
+        let data1: serde_json::Value = serde_json::from_str(&obs1.data).unwrap();
+        assert_eq!(data1["turns.total"], 42);
+        assert_eq!(data1["cost.estimate_usd"], 1.5);
+        assert_eq!(data1["session.duration_ms"], 120000);
+        assert_eq!(obs1.duration, Some(120)); // 120000ms / 1000
+
+        // Verify session 2 observation
+        let obs2 = get_observation(&conn, 2).unwrap().unwrap();
+        let data2: serde_json::Value = serde_json::from_str(&obs2.data).unwrap();
+        assert_eq!(data2["turns.total"], 30);
+        assert_eq!(obs2.duration, Some(90));
+    }
+
+    #[test]
+    fn rebuild_observations_clears_old() {
+        let (_dir, conn) = test_db();
+
+        // Insert a stale observation
+        upsert_observation(
+            &conn,
+            99,
+            "2026-01-01T00:00:00Z",
+            Some(100),
+            None,
+            r#"{"old": true}"#,
+        )
+        .unwrap();
+
+        // Insert events for session 1 only
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("10"),
+            None,
+        )
+        .unwrap();
+
+        let count = rebuild_observations(&conn).unwrap();
+        assert_eq!(count, 1);
+
+        // Old observation should be gone
+        let old = get_observation(&conn, 99).unwrap();
+        assert!(old.is_none());
+
+        // New observation should exist
+        let new = get_observation(&conn, 1).unwrap();
+        assert!(new.is_some());
+    }
+
+    #[test]
+    fn rebuild_observations_boolean_values() {
+        let (_dir, conn) = test_db();
+
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "commit.detected",
+            Some("true"),
+            None,
+        )
+        .unwrap();
+
+        rebuild_observations(&conn).unwrap();
+
+        let obs = get_observation(&conn, 1).unwrap().unwrap();
+        let data: serde_json::Value = serde_json::from_str(&obs.data).unwrap();
+        assert_eq!(data["commit.detected"], true);
+    }
+
+    #[test]
+    fn rebuild_observations_no_duration_event() {
+        let (_dir, conn) = test_db();
+
+        // Session with no session.duration_ms event
+        insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("5"),
+            None,
+        )
+        .unwrap();
+
+        rebuild_observations(&conn).unwrap();
+
+        let obs = get_observation(&conn, 1).unwrap().unwrap();
+        assert!(obs.duration.is_none());
     }
 }

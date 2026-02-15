@@ -112,6 +112,8 @@ enum MetricsAction {
         #[arg(long)]
         from: PathBuf,
     },
+    /// Rebuild observations from events (drops and recreates)
+    Rebuild,
 }
 
 #[derive(Subcommand, Debug)]
@@ -321,6 +323,7 @@ async fn main() {
                 metrics_cmd::handle_targets(&db_path, *last, &config_for_metrics.metrics.targets)
             }
             MetricsAction::Migrate { from } => metrics_cmd::handle_migrate(&db_path, from),
+            MetricsAction::Rebuild => metrics_cmd::handle_rebuild(&db_path),
         };
 
         if let Err(e) = result {

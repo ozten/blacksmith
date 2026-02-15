@@ -232,6 +232,26 @@ pub fn handle_targets(
     Ok(())
 }
 
+/// Handle the `metrics rebuild` subcommand.
+///
+/// Drops all observations and regenerates them from the events table.
+/// Useful after manual event edits or migration.
+pub fn handle_rebuild(db_path: &Path) -> Result<(), String> {
+    if !db_path.exists() {
+        println!("No metrics database found. Nothing to rebuild.");
+        return Ok(());
+    }
+
+    let conn = db::open_or_create(db_path).map_err(|e| format!("Failed to open database: {e}"))?;
+
+    let count = db::rebuild_observations(&conn)
+        .map_err(|e| format!("Failed to rebuild observations: {e}"))?;
+
+    println!("Rebuilt {count} observation(s) from events.");
+
+    Ok(())
+}
+
 /// Handle the `metrics migrate --from <path>` subcommand.
 ///
 /// Imports data from a V1 self-improvement.db into the V2 database.
@@ -1535,5 +1555,117 @@ label = "Avg turns per session"
         assert_eq!(r1.threshold, 80.0);
         assert_eq!(r1.direction, "below");
         assert!(r1.unit.is_none());
+    }
+
+    // ── Rebuild tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn rebuild_no_database() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nonexistent.db");
+        handle_rebuild(&path).unwrap();
+    }
+
+    #[test]
+    fn rebuild_empty_database() {
+        let (_dir, path) = test_db_path();
+        db::open_or_create(&path).unwrap();
+        handle_rebuild(&path).unwrap();
+    }
+
+    #[test]
+    fn rebuild_regenerates_observations() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        // Insert events for two sessions
+        db::insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("50"),
+            None,
+        )
+        .unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "cost.estimate_usd",
+            Some("2.500000"),
+            None,
+        )
+        .unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "session.duration_ms",
+            Some("60000"),
+            None,
+        )
+        .unwrap();
+
+        db::insert_event_with_ts(
+            &conn,
+            "2026-01-15T11:00:00Z",
+            2,
+            "turns.total",
+            Some("30"),
+            None,
+        )
+        .unwrap();
+
+        drop(conn);
+        handle_rebuild(&path).unwrap();
+
+        // Verify observations were created
+        let conn = db::open_or_create(&path).unwrap();
+        let obs = db::recent_observations(&conn, 10).unwrap();
+        assert_eq!(obs.len(), 2);
+
+        let obs1 = db::get_observation(&conn, 1).unwrap().unwrap();
+        let data: serde_json::Value = serde_json::from_str(&obs1.data).unwrap();
+        assert_eq!(data["turns.total"], 50);
+        assert_eq!(data["cost.estimate_usd"], 2.5);
+        assert_eq!(obs1.duration, Some(60));
+    }
+
+    #[test]
+    fn rebuild_replaces_stale_observations() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        // Insert a stale observation with no matching events
+        db::upsert_observation(
+            &conn,
+            99,
+            "2026-01-01T00:00:00Z",
+            Some(100),
+            None,
+            r#"{"stale": true}"#,
+        )
+        .unwrap();
+
+        // Insert events for session 1
+        db::insert_event_with_ts(
+            &conn,
+            "2026-01-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("20"),
+            None,
+        )
+        .unwrap();
+
+        drop(conn);
+        handle_rebuild(&path).unwrap();
+
+        let conn = db::open_or_create(&path).unwrap();
+        // Stale observation should be gone
+        assert!(db::get_observation(&conn, 99).unwrap().is_none());
+        // New observation should exist
+        assert!(db::get_observation(&conn, 1).unwrap().is_some());
     }
 }

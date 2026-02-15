@@ -774,3 +774,24 @@
 ### Suggested Next Tasks
 - Implement metrics rebuild command (9cm) — P3, ready
 - Implement metrics export, query, and events dump commands (odo) — P3, ready
+
+--- 2026-02-15 14:48:30 | simple-agent-harness-9cm ---
+## Last Session: Implement metrics rebuild command (simple-agent-harness-9cm)
+
+### Completed
+- Added `blacksmith metrics rebuild` CLI subcommand
+- Implemented `db::rebuild_observations()` — deletes all observations, then regenerates from events table
+- For each distinct session in events, aggregates (kind, value) pairs into a JSON observation object
+- Handles numeric (int/float), boolean, and string event values with proper JSON typing
+- Extracts `session.duration_ms` from events to populate observation duration_secs
+- Added `handle_rebuild` in metrics_cmd.rs with no-db and empty-db handling
+- Added `Rebuild` variant to MetricsAction enum, wired in main.rs match
+- Added 9 new tests: 5 in db.rs (empty events, from events, clears old, boolean values, no duration) and 4 in metrics_cmd.rs (no db, empty db, regenerates, replaces stale)
+- All 376 tests pass, clippy clean (pre-existing warnings only), fmt applied
+
+### Current State
+- `metrics rebuild` command is fully functional and tested
+- Drops and recreates observations from events, as specified in PRD
+
+### Suggested Next Tasks
+- Implement metrics export, query, and events dump commands (odo) — P3, ready
