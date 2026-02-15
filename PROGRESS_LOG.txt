@@ -83,3 +83,29 @@
 - Implement structured console logging with tracing (yyb) — P2, unblocked
 - Implement JSONL event log (t0t) — P2, unblocked
 - Implement pre/post-session hook execution (8ff) — P2, unblocked
+
+--- 2026-02-15 01:20:12 | simple-agent-harness-yyb ---
+## Last Session: Implement structured console logging with tracing (simple-agent-harness-yyb)
+
+### Completed
+- Configured tracing_subscriber with EnvFilter for log level control:
+  - `--quiet` flag → warn level and above
+  - `--verbose` flag → debug level and above
+  - Default → info level
+  - RUST_LOG env var overrides CLI flags
+- Added `env-filter` feature to tracing-subscriber in Cargo.toml
+- Replaced println! calls in main startup/finish with tracing::info! macros using structured key=value fields
+- Replaced eprintln! calls in signals.rs with tracing::warn! macros (removed duplicate eprintln+tracing pairs)
+- Replaced eprintln! in --status error path with tracing::error!
+- Kept println! for --dry-run and --status display output (intentional user-facing output, not log messages)
+- All 78 tests pass, clippy clean, fmt applied
+
+### Current State
+- Structured logging is fully functional with tracing_subscriber
+- Log format: `[timestamp] [LEVEL] key=value message` via tracing_subscriber::fmt defaults
+- Pre-existing dead_code warnings remain for unimplemented modules (hooks, metrics, retry.current_attempt, session.output_file, watchdog.ProcessExited)
+
+### Suggested Next Tasks
+- Implement JSONL event log (t0t) — P2, unblocked
+- Implement pre/post-session hook execution (8ff) — P2, unblocked
+- Implement prompt prepend_commands (mxg) — P2, unblocked

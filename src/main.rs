@@ -11,6 +11,7 @@ mod watchdog;
 use clap::Parser;
 use config::{CliOverrides, HarnessConfig};
 use std::path::PathBuf;
+use tracing_subscriber::EnvFilter;
 
 /// A Rust CLI tool that runs an AI coding agent in a supervised loop:
 /// dispatch a prompt, monitor the session, enforce health invariants,
@@ -76,12 +77,22 @@ impl Cli {
 async fn main() {
     let cli = Cli::parse();
 
+    // Log level: --quiet = warn+, --verbose = debug+, default = info+
+    let level = if cli.quiet {
+        "warn"
+    } else if cli.verbose {
+        "debug"
+    } else {
+        "info"
+    };
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+
     tracing_subscriber::fmt()
         .with_target(false)
         .with_thread_ids(false)
+        .with_env_filter(filter)
         .init();
 
-    tracing::info!("simple-agent-harness starting");
     tracing::debug!(?cli, "parsed CLI arguments");
 
     // Load config: file > defaults, then CLI > file
@@ -171,7 +182,7 @@ async fn main() {
                 println!("No running harness detected.");
             }
             Err(e) => {
-                eprintln!("Error reading status: {e}");
+                tracing::error!(error = %e, "failed to read status");
                 std::process::exit(1);
             }
         }
@@ -181,15 +192,19 @@ async fn main() {
     // Install signal handlers
     let signals = signals::SignalHandler::install();
 
-    println!("simple-agent-harness v{}", env!("CARGO_PKG_VERSION"));
-    println!("Max iterations: {}", config.session.max_iterations);
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        max_iterations = config.session.max_iterations,
+        "simple-agent-harness starting"
+    );
 
     // Run the main loop
     let summary = runner::run(&config, &signals).await;
 
-    println!();
-    println!(
-        "Loop finished: {} productive iterations, global counter = {}, reason = {:?}",
-        summary.productive_iterations, summary.global_iteration, summary.exit_reason
+    tracing::info!(
+        productive = summary.productive_iterations,
+        global = summary.global_iteration,
+        reason = ?summary.exit_reason,
+        "loop finished"
     );
 }

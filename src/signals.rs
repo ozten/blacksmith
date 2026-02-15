@@ -117,15 +117,13 @@ impl SignalHandler {
 
             // Wait for first SIGINT
             sigint.recv().await;
-            eprintln!("Caught SIGINT, finishing current session...");
-            tracing::info!("caught SIGINT, requesting graceful shutdown");
+            tracing::warn!("caught SIGINT, finishing current session");
             state.shutdown_requested.store(true, Ordering::SeqCst);
 
             // Wait up to 3 seconds for a second SIGINT
             let second = tokio::time::timeout(std::time::Duration::from_secs(3), sigint.recv());
             if second.await.is_ok() {
                 // Second SIGINT within 3s — force-kill
-                eprintln!("Second SIGINT received, killing current session immediately");
                 tracing::warn!("double SIGINT: force-killing child process group");
                 state.force_kill.store(true, Ordering::SeqCst);
                 state.force_kill_notify.notify_waiters();
@@ -147,8 +145,7 @@ impl SignalHandler {
                     .expect("failed to install SIGTERM handler");
 
             sigterm.recv().await;
-            eprintln!("Caught SIGTERM, finishing current session...");
-            tracing::info!("caught SIGTERM, requesting graceful shutdown");
+            tracing::warn!("caught SIGTERM, finishing current session");
             state.shutdown_requested.store(true, Ordering::SeqCst);
         });
     }
