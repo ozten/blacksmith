@@ -21,13 +21,29 @@ fi
 
 check_rate_limited() {
     local output_file="$1"
-    # Check for rate limit indicators in the JSONL output
-    if grep -q '"error":"rate_limit"' "$output_file" 2>/dev/null; then
-        return 0  # rate limited
+    # Only check the final "type":"result" event for rate limit signals.
+    # Previous approach grepped the entire JSONL (including tool results containing
+    # source code), causing false positives when the agent read files mentioning
+    # rate limiting.
+    local result_line
+    result_line=$(grep '"type":"result"' "$output_file" 2>/dev/null | tail -1)
+    [ -z "$result_line" ] && return 1  # no result event = not rate limited
+
+    # 1. Check if the session ended with an error
+    if echo "$result_line" | grep -q '"is_error":true'; then
+        # Check for rate limit in the error result
+        if echo "$result_line" | grep -qi 'rate.limit\|rate_limit\|usage.limit\|hit your limit'; then
+            return 0  # rate limited
+        fi
     fi
-    if grep -qi "usage limit\|hit your limit\|resets.*UTC" "$output_file" 2>/dev/null; then
-        return 0  # rate limited
+
+    # 2. Check for a non-success subtype indicating rate limiting
+    if echo "$result_line" | grep -q '"subtype":"error"'; then
+        if echo "$result_line" | grep -qi 'rate.limit\|rate_limit'; then
+            return 0  # rate limited
+        fi
     fi
+
     return 1  # not rate limited
 }
 
