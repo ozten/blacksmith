@@ -3,6 +3,7 @@
 /// The runner orchestrates the main iteration loop, coordinating
 /// session spawning, watchdog monitoring, retry logic, and signal handling.
 use crate::config::HarnessConfig;
+use crate::hooks::{HookEnv, HookRunner};
 use crate::metrics::{EventLog, SessionEvent};
 use crate::retry::{RetryDecision, RetryPolicy};
 use crate::session::{self, SessionResult};
@@ -67,6 +68,12 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         .map(|p| EventLog::new(p.clone()));
     let mut retries_this_session = 0u32;
 
+    // Hook runner: pre/post-session shell commands
+    let hook_runner = HookRunner::new(
+        config.hooks.pre_session.clone(),
+        config.hooks.post_session.clone(),
+    );
+
     tracing::info!(max_iterations, global_iteration, "starting iteration loop");
 
     while productive < max_iterations {
@@ -121,6 +128,36 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
             output = %output_path.display(),
             "starting iteration"
         );
+
+        // Run pre-session hooks
+        if !config.hooks.pre_session.is_empty() {
+            status.set_iteration(productive);
+            status.set_global_iteration(global_iteration);
+            status.update(HarnessState::PreHooks);
+
+            let pre_env = HookEnv::pre_session(
+                productive,
+                global_iteration,
+                &config.session.prompt_file.display().to_string(),
+            );
+            if let Err(e) = hook_runner.run_pre_session(&pre_env) {
+                tracing::error!(error = %e, "pre-session hook failed, skipping iteration");
+                consecutive_errors += 1;
+                global_iteration += 1;
+                save_counter(&config.session.counter_file, global_iteration);
+                status.set_global_iteration(global_iteration);
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    tracing::error!(
+                        consecutive_errors,
+                        "too many consecutive hook failures, exiting"
+                    );
+                    exit_reason = ExitReason::PromptError;
+                    status.update(HarnessState::ShuttingDown);
+                    break;
+                }
+                continue;
+            }
+        }
 
         // Update status: session running
         status.set_iteration(productive);
@@ -191,6 +228,22 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                     }
                 }
 
+                // Run post-session hooks
+                if !config.hooks.post_session.is_empty() {
+                    status.update(HarnessState::PostHooks);
+                    let post_env = HookEnv::post_session(
+                        productive,
+                        global_iteration,
+                        &config.session.prompt_file.display().to_string(),
+                        &output_path.display().to_string(),
+                        result.exit_code,
+                        result.output_bytes,
+                        result.duration.as_secs(),
+                        false, // committed — not yet implemented
+                    );
+                    hook_runner.run_post_session(&post_env);
+                }
+
                 productive += 1;
                 global_iteration += 1;
                 retry_policy.reset();
@@ -243,6 +296,22 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                     if let Err(e) = log.append(&event) {
                         tracing::warn!(error = %e, "failed to write event log");
                     }
+                }
+
+                // Run post-session hooks (even for skip — session ran, just empty)
+                if !config.hooks.post_session.is_empty() {
+                    status.update(HarnessState::PostHooks);
+                    let post_env = HookEnv::post_session(
+                        productive,
+                        global_iteration,
+                        &config.session.prompt_file.display().to_string(),
+                        &output_path.display().to_string(),
+                        result.exit_code,
+                        result.output_bytes,
+                        result.duration.as_secs(),
+                        false, // committed — not yet implemented
+                    );
+                    hook_runner.run_post_session(&post_env);
                 }
 
                 tracing::warn!("skipping iteration after exhausting retries");
@@ -773,6 +842,121 @@ mod tests {
         assert!(
             !event_log_path.exists(),
             "no event log should be created when not configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pre_session_hooks_run_with_env_vars() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("pre_hook_ran");
+        let mut config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
+        config.hooks.pre_session = vec![format!(
+            "echo $HARNESS_ITERATION:$HARNESS_GLOBAL_ITERATION:$HARNESS_PROMPT_FILE > {}",
+            marker.display()
+        )];
+        config.session.max_iterations = 1;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        assert_eq!(summary.productive_iterations, 1);
+        assert!(marker.exists(), "pre-session hook should have run");
+        let contents = std::fs::read_to_string(&marker).unwrap();
+        let parts: Vec<&str> = contents.trim().split(':').collect();
+        assert_eq!(parts[0], "0"); // HARNESS_ITERATION
+        assert_eq!(parts[1], "0"); // HARNESS_GLOBAL_ITERATION
+        assert!(parts[2].contains("prompt.md")); // HARNESS_PROMPT_FILE
+    }
+
+    #[tokio::test]
+    async fn test_pre_session_hook_failure_skips_iteration() {
+        let dir = tempdir().unwrap();
+        let mut config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
+        // Pre-session hook always fails
+        config.hooks.pre_session = vec!["false".to_string()];
+        config.session.max_iterations = 3;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        // All iterations skipped due to hook failure; exits after MAX_CONSECUTIVE_ERRORS (5)
+        assert_eq!(summary.productive_iterations, 0);
+        // Exits due to consecutive errors (same exit path as repeated session errors)
+        assert_eq!(summary.exit_reason, ExitReason::PromptError);
+        assert_eq!(summary.global_iteration, 5); // 5 consecutive hook failures
+    }
+
+    #[tokio::test]
+    async fn test_post_session_hooks_run_with_env_vars() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("post_hook_ran");
+        let mut config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
+        config.hooks.post_session = vec![format!(
+            "echo $HARNESS_OUTPUT_FILE:$HARNESS_EXIT_CODE:$HARNESS_OUTPUT_BYTES > {}",
+            marker.display()
+        )];
+        config.session.max_iterations = 1;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        assert_eq!(summary.productive_iterations, 1);
+        assert!(marker.exists(), "post-session hook should have run");
+        let contents = std::fs::read_to_string(&marker).unwrap();
+        let parts: Vec<&str> = contents.trim().split(':').collect();
+        assert!(parts[0].contains("test-iter-0.jsonl")); // HARNESS_OUTPUT_FILE
+        assert_eq!(parts[1], "0"); // HARNESS_EXIT_CODE
+        assert!(parts[2].parse::<u64>().unwrap() > 0); // HARNESS_OUTPUT_BYTES
+    }
+
+    #[tokio::test]
+    async fn test_post_session_hook_failure_does_not_stop_loop() {
+        let dir = tempdir().unwrap();
+        let mut config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
+        // Post-session hook always fails
+        config.hooks.post_session = vec!["false".to_string()];
+        config.session.max_iterations = 2;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        // Should complete all iterations despite post-hook failures
+        assert_eq!(summary.productive_iterations, 2);
+        assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
+    }
+
+    #[tokio::test]
+    async fn test_empty_retry_does_not_trigger_post_hooks() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("post_hook_count");
+        let mut config = test_config(dir.path(), "true", vec![]);
+        config.session.max_iterations = 1;
+        config.retry.max_empty_retries = 2;
+        config.watchdog.min_output_bytes = 100;
+        // Post hook appends a line each time it runs
+        config.hooks.post_session = vec![format!("echo ran >> {}", marker.display())];
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        assert_eq!(summary.productive_iterations, 1);
+        // Post hook should only run once (on Skip), not during retries
+        assert!(marker.exists(), "post hook should have run at least once");
+        let contents = std::fs::read_to_string(&marker).unwrap();
+        let count = contents.lines().count();
+        assert_eq!(
+            count, 1,
+            "post hook should run once (on skip), not during retries"
         );
     }
 }
