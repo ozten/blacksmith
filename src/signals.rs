@@ -106,8 +106,8 @@ impl SignalHandler {
     }
 
     /// Spawn a tokio task that listens for SIGINT.
-    /// First SIGINT → graceful shutdown.
-    /// Second SIGINT within 3s → force-kill the child process group.
+    /// First SIGINT → graceful shutdown + SIGTERM child so it can exit cleanly.
+    /// Second SIGINT (any time after first) → SIGKILL the child process group.
     fn spawn_sigint_listener(&self) {
         let state = self.inner.clone();
         tokio::spawn(async move {
@@ -117,21 +117,24 @@ impl SignalHandler {
 
             // Wait for first SIGINT
             sigint.recv().await;
-            tracing::warn!("caught SIGINT, finishing current session");
+            tracing::warn!("caught SIGINT, finishing current session (Ctrl+C again to force-kill)");
             state.shutdown_requested.store(true, Ordering::SeqCst);
 
-            // Wait up to 3 seconds for a second SIGINT
-            let second = tokio::time::timeout(std::time::Duration::from_secs(3), sigint.recv());
-            if second.await.is_ok() {
-                // Second SIGINT within 3s — force-kill
-                tracing::warn!("double SIGINT: force-killing child process group");
-                state.force_kill.store(true, Ordering::SeqCst);
-                state.force_kill_notify.notify_waiters();
+            // Send SIGTERM to child so it can exit gracefully
+            let pid = state.child_pid.load(Ordering::SeqCst);
+            if pid > 0 {
+                term_process_group(pid);
+            }
 
-                let pid = state.child_pid.load(Ordering::SeqCst);
-                if pid > 0 {
-                    kill_process_group(pid);
-                }
+            // Wait indefinitely for a second SIGINT (no timeout)
+            sigint.recv().await;
+            tracing::warn!("double SIGINT: force-killing child process group");
+            state.force_kill.store(true, Ordering::SeqCst);
+            state.force_kill_notify.notify_waiters();
+
+            let pid = state.child_pid.load(Ordering::SeqCst);
+            if pid > 0 {
+                kill_process_group(pid);
             }
         });
     }
@@ -151,7 +154,19 @@ impl SignalHandler {
     }
 }
 
-/// Send SIGKILL to an entire process group.
+/// Send SIGTERM to an entire process group (graceful shutdown).
+fn term_process_group(pid: i32) {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+
+    let pgid = Pid::from_raw(pid);
+    tracing::info!(%pid, "sending SIGTERM to process group");
+    if let Err(e) = killpg(pgid, Signal::SIGTERM) {
+        tracing::warn!(%pid, error = %e, "failed to SIGTERM process group");
+    }
+}
+
+/// Send SIGKILL to an entire process group (force kill).
 fn kill_process_group(pid: i32) {
     use nix::sys::signal::{killpg, Signal};
     use nix::unistd::Pid;

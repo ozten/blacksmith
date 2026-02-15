@@ -699,6 +699,134 @@ CREATE TABLE integration_log (
     cross_task_imports TEXT,              -- JSON array of imports added during integration
     reconciliation_run BOOLEAN DEFAULT 0
 );
+
+-- Per-bead timing metrics (populated on bead close or session attribution)
+CREATE TABLE bead_metrics (
+    bead_id TEXT PRIMARY KEY,
+    sessions INTEGER NOT NULL DEFAULT 0, -- number of sessions spent on this bead
+    wall_time_secs REAL NOT NULL DEFAULT 0, -- total wall clock time across sessions
+    total_turns INTEGER NOT NULL DEFAULT 0,
+    total_output_tokens INTEGER DEFAULT 0,
+    integration_time_secs REAL DEFAULT 0,-- time spent in integration loop
+    completed_at TEXT                     -- NULL if still open
+);
+```
+
+---
+
+## Task Metrics & Time Estimation
+
+Blacksmith tracks how long each bead takes to complete and uses historical data to estimate remaining work. This works in both single-worker and multi-worker modes.
+
+### Session-to-Bead Attribution
+
+Every session must be linked to the bead it worked on. The attribution method depends on the execution mode.
+
+**Multi-agent mode (explicit).** The `worker_assignments` table directly records which bead each session worked on. Attribution is free — the coordinator knows the mapping at assignment time.
+
+**Single-agent mode (inferred).** When running in serial mode without the coordinator, blacksmith infers attribution using file metadata and git history:
+
+1. **File timestamps.** The session output file's birth time (`ctime`) marks session start; modification time (`mtime`) marks session end. These bracket the session's time window.
+
+2. **Git commit correlation.** Commits whose timestamps fall between `ctime` and `mtime` typically reference a bead ID in their message (e.g., `beads-abc: Implement feature`). Blacksmith scans `git log --after={ctime} --before={mtime}` and extracts bead IDs using the pattern `{project}-{id}` from commit subjects.
+
+3. **Fallback: JSONL content.** If git correlation finds nothing, blacksmith scans the session's `result` event text for bead ID mentions.
+
+The attributed bead ID is stored as a `session.bead_id` event during ingestion. The `bead_metrics` table is updated with cumulative timing: if a bead required multiple sessions (retries, continuation), all session durations are summed.
+
+### Estimation Model
+
+Blacksmith maintains running statistics on completed beads in the `bead_metrics` table. On each bead completion, it updates:
+
+- `sessions` — how many iterations this bead consumed
+- `wall_time_secs` — total wall clock time (sum of `session.duration_secs` across attributed sessions)
+- `total_turns` — sum of turns across sessions
+- `integration_time_secs` — time spent in the integration loop (multi-agent only)
+
+These feed the time estimation.
+
+#### Serial Estimate
+
+Simple average extrapolation:
+
+```
+avg_time = sum(wall_time_secs for closed beads) / count(closed beads)
+remaining_serial = count(open beads) * avg_time
+```
+
+If there are fewer than 3 completed beads, blacksmith shows "insufficient data" instead of a potentially misleading estimate.
+
+#### Parallel Estimate
+
+A heuristic based on the dependency graph and worker count:
+
+```
+1. Build the dependency DAG of open beads (from beads dependencies)
+2. Find the critical path — the longest chain of sequentially-dependent beads
+3. critical_path_time = count(beads on critical path) * avg_time
+4. serial_time = count(open beads) * avg_time
+5. integration_overhead = avg_integration_time * count(open beads)
+6. parallel_time = max(critical_path_time, serial_time / N) + integration_overhead
+```
+
+Where `N` is `workers.max`. This is deliberately approximate — it doesn't model dynamic conflicts, scheduling contention, or failed integrations. The estimate is a lower bound on wall-clock time, not a prediction. It's useful for order-of-magnitude planning ("minutes vs hours"), not for precise ETAs.
+
+**Accuracy notes:**
+- The critical path dominates when there are deep dependency chains that can't be parallelized.
+- `serial_time / N` dominates when work is mostly independent.
+- `integration_overhead` accounts for the sequential integration queue being a bottleneck.
+- The estimate improves as more beads complete and `avg_time` stabilizes.
+
+### CLI Output
+
+#### During `blacksmith run`
+
+The status line includes progress and ETA after every session:
+
+```
+[iter 25] worker-0: beads-xyz "Add analytics module" (coding, 2.1m elapsed)
+          worker-1: beads-def "Fix auth flow" (integrating)
+          worker-2: idle
+          ─────────────────────────────────────────────────
+          Progress: 18/24 beads | ETA: ~18m serial, ~8m @ 3 workers
+```
+
+In single-worker mode:
+
+```
+[iter 12] beads-abc "Implement retry logic" completed in 3.2m (27 turns)
+          Progress: 8/14 beads | avg 2.9m/bead | ETA: ~17m
+```
+
+#### `blacksmith --status`
+
+```
+Status: running (3 workers active)
+Progress: 18/24 beads (75%)
+  Completed:  18 beads in 54.2m (avg 3.0m/bead)
+  In progress: 2 beads (worker-0: beads-xyz, worker-1: beads-def)
+  Remaining:   4 beads
+  ETA (serial):   ~12m
+  ETA (parallel): ~6m (3 workers, 2 beads on critical path)
+  Failed: 1 bead awaiting human review
+```
+
+#### `blacksmith metrics beads`
+
+Detailed per-bead timing report:
+
+```
+Bead     Status   Sessions  WallTime  Turns  Title
+─────────────────────────────────────────────────────────────────
+ewc      closed        1      3.8m      49   Scaffold Rust project
+utz      closed        1      3.3m      33   Implement config loading
+d3v      closed        1      2.7m      29   Implement session spawning
+i9s      closed        1      6.2m      53   Implement extraction rules
+...
+─────────────────────────────────────────────────────────────────
+Total: 18 closed (54.2m), 6 open
+Average: 3.0m/bead, 29 turns/bead
+Fastest: 5x6 (1.6m)  Slowest: i9s (6.2m)
 ```
 
 ---
@@ -716,6 +844,7 @@ blacksmith workers status                    # show worker pool state
 blacksmith workers kill <worker-id>          # stop a specific worker
 blacksmith integration log [--last N]        # show integration history
 blacksmith integration retry <bead-id>       # retry a failed integration
+blacksmith metrics beads                     # per-bead timing report
 ```
 
 ### Updated commands
@@ -723,7 +852,9 @@ blacksmith integration retry <bead-id>       # retry a failed integration
 ```
 blacksmith run                               # uses .blacksmith/ for all artifacts
                                              # with workers.max > 1, runs multi-agent
-blacksmith --status                          # reads .blacksmith/status, shows worker states
+                                             # shows progress + ETA after each session
+blacksmith --status                          # reads .blacksmith/status, shows worker states,
+                                             # progress, and time estimates
 ```
 
 ### Adapter inspection
@@ -775,7 +906,7 @@ blacksmith adapter test <file>               # try parsing a file with the confi
 
 ### Milestone 8: Multi-Agent Coordinator & Worktrees
 
-- Add coordinator SQLite tables (`worker_assignments`, `task_file_changes`, `integration_log`)
+- Add coordinator SQLite tables (`worker_assignments`, `task_file_changes`, `integration_log`, `bead_metrics`)
 - Implement worker pool manager (spawn/track/reap workers)
 - Implement git worktree lifecycle (create from main, cleanup after integration)
 - Implement scheduler: read beads, check affected set overlaps, assign to idle workers
@@ -785,8 +916,10 @@ blacksmith adapter test <file>               # try parsing a file with the confi
 - Implement `blacksmith workers status` and `blacksmith workers kill` commands
 - Wire `workers.max` config into `blacksmith run`
 - Single-worker mode (`workers.max = 1`) behaves identically to V2 serial loop
+- Implement session-to-bead attribution (multi-agent: from assignment, single-agent: file metadata + git log)
+- Populate `bead_metrics` table on bead close (wall time, turns, sessions, tokens)
 
-### Milestone 9: Integration Loop & Reconciliation
+### Milestone 9: Integration Loop, Reconciliation & Time Estimation
 
 - Implement integration queue (sequential processing of completed worktrees)
 - Implement merge-main-into-branch step
@@ -799,6 +932,12 @@ blacksmith adapter test <file>               # try parsing a file with the confi
 - Implement `blacksmith integration log` and `blacksmith integration retry` commands
 - Track cross-task imports for entanglement-aware rollback
 - Implement `git revert` + manifest reversal for rollback
+- Record `integration_time_secs` in `bead_metrics` after each integration
+- Implement serial time estimation (avg extrapolation from `bead_metrics`)
+- Implement parallel time estimation (critical path heuristic over dependency DAG)
+- Add progress + ETA to `blacksmith run` status line output
+- Add progress + ETA to `blacksmith --status` output
+- Implement `blacksmith metrics beads` command (per-bead timing report)
 
 ---
 
