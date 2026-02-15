@@ -467,3 +467,35 @@
 - Implement built-in JSONL metric extraction for turns, cost, and duration (8j5) — P1, now unblocked
 - Implement metrics log and metrics status CLI commands (pr9) — P1, now unblocked
 - Implement improve show/update/promote/dismiss/search commands (v25) — P2, ready
+
+--- 2026-02-15 14:07:06 | simple-agent-harness-8j5 ---
+## Last Session: Implement built-in JSONL metric extraction (simple-agent-harness-8j5)
+
+### Completed
+- Created `src/ingest.rs` with JSONL metric extraction and database ingestion
+- `extract_metrics(path)` — parses a Claude JSONL session output file and extracts:
+  - turns.total (count of assistant events)
+  - turns.narration_only (assistant events with text but no tool_use)
+  - turns.parallel (assistant events with 2+ tool_use blocks)
+  - turns.tool_calls (total tool_use blocks across all assistant events)
+  - cost.input_tokens / cost.output_tokens / cost.cache_read_tokens / cost.cache_creation_tokens (aggregated from modelUsage across all models)
+  - cost.estimate_usd (from result.total_cost_usd)
+  - session.output_bytes (file size)
+  - session.duration_ms (from result.duration_ms)
+  - session.exit_code (passed in by caller from SessionResult)
+- `ingest_session(conn, session, jsonl_path, exit_code)` — full pipeline:
+  - Extracts metrics from JSONL file
+  - Writes 11-12 individual events to the events table (one per metric kind)
+  - Builds and upserts a JSON observation summarizing all metrics
+- `IngestError` enum wrapping IO and DB errors
+- 17 new tests covering all extraction logic, ingestion, edge cases, and a realistic multi-event JSONL file
+- All 225 tests pass, clippy clean (only pre-existing dead_code warnings), fmt applied
+
+### Current State
+- `src/ingest.rs` is complete and ready to be consumed by downstream tasks
+- Dead_code warnings for new functions are expected — the integration task (k53) will call ingest_session from the runner loop
+
+### Suggested Next Tasks
+- Integrate automatic post-session JSONL ingestion into loop (k53) — P1, now unblocked
+- Implement metrics log and metrics status CLI commands (pr9) — P1, now unblocked
+- Implement improve show/update/promote/dismiss/search commands (v25) — P2, ready

@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod hooks;
 mod improve;
+mod ingest;
 mod metrics;
 mod prompt;
 mod ratelimit;
