@@ -1216,3 +1216,47 @@
 - **3pa**: Implement integration queue and merge-main-into-branch step (P1, unblocked by this)
 - **x1a**: Implement session compression with zstd (P2)
 - **e2l**: Implement raw adapter with pass-through extraction (P2)
+
+--- 2026-02-15 16:03:58 | simple-agent-harness-3pa ---
+## Last Session: Implement integration queue and merge-main-into-branch step (3pa)
+
+### Completed
+- Created src/integrator.rs with the IntegrationQueue
+  - IntegrationResult and IntegrationError types
+  - IntegrationQueue::new(repo_dir, base_branch)
+  - IntegrationQueue::integrate(): full integration pipeline for a completed worktree
+    - Step 1: merge main into the branch (git merge base_branch --no-edit)
+    - Step 2: get HEAD commit from the worktree after merge
+    - Step 3: fast-forward main to the worktree's HEAD (git update-ref)
+    - Step 4: record integration in the DB (integration_log table)
+    - Step 5: clean up the worktree
+  - merge_main_into_branch: runs git merge in the worktree
+  - abort_merge: cleans up conflicted merge state
+  - get_head_commit: gets SHA from worktree HEAD
+  - fast_forward_main: uses git update-ref to advance main without checkout
+  - record_failure: marks assignment as integration_failed in DB
+  - 10 tests: successful integration, merge conflict, trivial merge, error display,
+    head commit, leap year, timestamp format, queue creation, merge no divergence, fast forward
+- Added WorkerState::Integrating to pool.rs for tracking in-flight integrations
+- Added pool methods: has_integrating(), next_completed(), set_integrating()
+- Wired integrator into coordinator.rs:
+  - Creates IntegrationQueue from repo_dir and base_branch
+  - After polling completions: failed workers reset immediately, succeeded workers queued
+  - Integration section: checks has_integrating(), picks next_completed(), marks integrating,
+    runs integrate(), resets worker to idle after
+  - Only one integration at a time (sequential, as spec requires)
+- Added mod integrator to main.rs
+- All 558 tests pass, clippy clean (existing dead_code warnings only), fmt clean
+
+### Current State
+- Integration pipeline is functional: merge-main-into-branch + fast-forward-main
+- Future work items from the spec that are NOT yet implemented:
+  - Step 2: Apply manifest entries from task_manifest.toml (separate bead: m5l)
+  - Steps 3-4: cargo check + integration agent for surgical fixes (separate bead: m5l)
+  - Steps 5-6: cargo test + test failure handling (separate bead: m5l)
+  - Step 8: Run bd close <bead-id> (could be added to integrate())
+
+### Suggested Next Tasks
+- **m5l**: Implement integration agent spawning for compiler fixes (P1, blocked by this)
+- **x1a**: Implement session compression with zstd (P2)
+- **e2l**: Implement raw adapter with pass-through extraction (P2)

@@ -3,9 +3,11 @@
 /// When `workers.max > 1`, the coordinator replaces the serial runner loop.
 /// It reads ready beads, uses the scheduler to find non-conflicting assignments,
 /// spawns workers in git worktrees, and polls for completions.
+/// Completed workers are queued for sequential integration into main.
 use crate::config::HarnessConfig;
 use crate::data_dir::DataDir;
 use crate::db;
+use crate::integrator::IntegrationQueue;
 use crate::pool::{PoolError, WorkerPool};
 use crate::scheduler::{self, InProgressAssignment, ReadyBead};
 use crate::signals::SignalHandler;
@@ -75,8 +77,9 @@ pub async fn run(
         };
     }
 
-    let mut pool = WorkerPool::new(&config.workers, repo_dir, worktrees_dir);
+    let mut pool = WorkerPool::new(&config.workers, repo_dir.clone(), worktrees_dir);
     let output_dir = data_dir.sessions_dir();
+    let integration_queue = IntegrationQueue::new(repo_dir, config.workers.base_branch.clone());
 
     // Ensure output directory exists
     if let Err(e) = std::fs::create_dir_all(&output_dir) {
@@ -130,8 +133,11 @@ pub async fn run(
 
             let succeeded = outcome.exit_code == Some(0);
             if succeeded {
-                completed_beads += 1;
-                tracing::info!(worker_id = outcome.worker_id, "bead completed successfully");
+                tracing::info!(
+                    worker_id = outcome.worker_id,
+                    "bead coding completed, queued for integration"
+                );
+                // Worker state is now Completed — will be picked up for integration below
             } else {
                 failed_beads += 1;
                 tracing::warn!(
@@ -139,11 +145,53 @@ pub async fn run(
                     exit_code = ?outcome.exit_code,
                     "bead failed"
                 );
+                // Reset failed workers back to idle immediately
+                if let Err(e) = pool.reset_worker(outcome.worker_id) {
+                    tracing::warn!(error = %e, worker_id = outcome.worker_id, "failed to reset worker");
+                }
             }
+        }
 
-            // Reset the worker back to idle
-            if let Err(e) = pool.reset_worker(outcome.worker_id) {
-                tracing::warn!(error = %e, worker_id = outcome.worker_id, "failed to reset worker");
+        // Integration: process one completed worker at a time (sequential)
+        // Only integrate if no other worker is currently integrating
+        if !pool.has_integrating() {
+            if let Some((worker_id, assignment_id, worktree_path, bead_id)) = pool.next_completed()
+            {
+                // Mark the worker as integrating
+                pool.set_integrating(worker_id);
+
+                tracing::info!(worker_id, bead_id = %bead_id, "starting integration");
+
+                let result = integration_queue.integrate(
+                    worker_id,
+                    assignment_id,
+                    &bead_id,
+                    &worktree_path,
+                    &db_conn,
+                );
+
+                if result.success {
+                    completed_beads += 1;
+                    tracing::info!(
+                        worker_id,
+                        bead_id = %bead_id,
+                        commit = ?result.merge_commit,
+                        "integration succeeded"
+                    );
+                } else {
+                    failed_beads += 1;
+                    tracing::warn!(
+                        worker_id,
+                        bead_id = %bead_id,
+                        reason = ?result.failure_reason,
+                        "integration failed"
+                    );
+                }
+
+                // Reset the worker back to idle after integration
+                if let Err(e) = pool.reset_worker(worker_id) {
+                    tracing::warn!(error = %e, worker_id, "failed to reset worker after integration");
+                }
             }
         }
 
@@ -292,7 +340,6 @@ mod tests {
     use crate::config::*;
     use crate::data_dir::DataDir;
     use crate::signals::SignalHandler;
-    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn test_config(dir: &std::path::Path) -> HarnessConfig {

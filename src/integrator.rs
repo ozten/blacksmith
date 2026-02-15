@@ -1,0 +1,713 @@
+/// Integration queue: processes completed worktrees one at a time.
+///
+/// After a coding agent finishes successfully in a worktree, the integrator:
+/// 1. Merges main into the branch (pull main into branch, NOT push branch to main)
+/// 2. If merge conflicts or errors occur, marks the integration as failed
+/// 3. On success, fast-forwards main to the branch tip
+/// 4. Records the integration in the database
+///
+/// Only one integration runs at a time to keep main's history linear.
+/// Workers continue coding while one task integrates.
+use crate::db;
+use crate::worktree;
+use rusqlite::Connection;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Result of a single integration attempt.
+#[derive(Debug)]
+pub struct IntegrationResult {
+    /// Worker slot ID that was integrated.
+    pub worker_id: u32,
+    /// Database assignment ID.
+    pub assignment_id: i64,
+    /// Bead ID that was integrated.
+    pub bead_id: String,
+    /// Whether integration succeeded.
+    pub success: bool,
+    /// Merge commit hash (if successful).
+    pub merge_commit: Option<String>,
+    /// Failure reason (if failed).
+    pub failure_reason: Option<String>,
+}
+
+/// Errors that can occur during integration.
+#[derive(Debug)]
+pub enum IntegrationError {
+    /// A git command failed.
+    Git(String),
+    /// Database error.
+    Db(rusqlite::Error),
+    /// Worktree error.
+    Worktree(worktree::WorktreeError),
+}
+
+impl std::fmt::Display for IntegrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IntegrationError::Git(msg) => write!(f, "git error: {msg}"),
+            IntegrationError::Db(e) => write!(f, "database error: {e}"),
+            IntegrationError::Worktree(e) => write!(f, "worktree error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for IntegrationError {}
+
+impl From<rusqlite::Error> for IntegrationError {
+    fn from(e: rusqlite::Error) -> Self {
+        IntegrationError::Db(e)
+    }
+}
+
+impl From<worktree::WorktreeError> for IntegrationError {
+    fn from(e: worktree::WorktreeError) -> Self {
+        IntegrationError::Worktree(e)
+    }
+}
+
+/// The integration queue manages sequential integration of completed worktrees.
+pub struct IntegrationQueue {
+    /// Path to the main repository.
+    repo_dir: PathBuf,
+    /// Base branch name (e.g., "main").
+    base_branch: String,
+}
+
+impl IntegrationQueue {
+    /// Create a new integration queue.
+    pub fn new(repo_dir: PathBuf, base_branch: String) -> Self {
+        Self {
+            repo_dir,
+            base_branch,
+        }
+    }
+
+    /// Integrate a single completed worktree into main.
+    ///
+    /// Steps:
+    /// 1. Fetch latest main into the worktree
+    /// 2. Merge main into the worktree's branch
+    /// 3. If merge succeeds, fast-forward main to the worktree's HEAD
+    /// 4. Record integration in the database
+    /// 5. Clean up the worktree
+    pub fn integrate(
+        &self,
+        worker_id: u32,
+        assignment_id: i64,
+        bead_id: &str,
+        worktree_path: &Path,
+        db_conn: &Connection,
+    ) -> IntegrationResult {
+        tracing::info!(
+            worker_id,
+            assignment_id,
+            bead_id,
+            worktree = %worktree_path.display(),
+            "starting integration"
+        );
+
+        // Step 1: Merge main into the worktree's branch
+        match self.merge_main_into_branch(worktree_path) {
+            Ok(()) => {
+                tracing::info!(worker_id, bead_id, "merge main into branch succeeded");
+            }
+            Err(e) => {
+                let reason = format!("merge failed: {e}");
+                tracing::warn!(worker_id, bead_id, error = %e, "merge main into branch failed");
+
+                // Abort the merge if it's in a conflicted state
+                let _ = self.abort_merge(worktree_path);
+
+                self.record_failure(assignment_id, db_conn, &reason);
+
+                return IntegrationResult {
+                    worker_id,
+                    assignment_id,
+                    bead_id: bead_id.to_string(),
+                    success: false,
+                    merge_commit: None,
+                    failure_reason: Some(reason),
+                };
+            }
+        }
+
+        // Step 2: Get the HEAD commit of the worktree (the merge result)
+        let worktree_head = match self.get_head_commit(worktree_path) {
+            Ok(head) => head,
+            Err(e) => {
+                let reason = format!("failed to get worktree HEAD: {e}");
+                tracing::warn!(worker_id, bead_id, error = %e, "failed to get worktree HEAD");
+                self.record_failure(assignment_id, db_conn, &reason);
+                return IntegrationResult {
+                    worker_id,
+                    assignment_id,
+                    bead_id: bead_id.to_string(),
+                    success: false,
+                    merge_commit: None,
+                    failure_reason: Some(reason),
+                };
+            }
+        };
+
+        // Step 3: Fast-forward main to the worktree's HEAD
+        match self.fast_forward_main(&worktree_head) {
+            Ok(()) => {
+                tracing::info!(
+                    worker_id,
+                    bead_id,
+                    commit = %worktree_head,
+                    "fast-forwarded main"
+                );
+            }
+            Err(e) => {
+                let reason = format!("fast-forward failed: {e}");
+                tracing::warn!(worker_id, bead_id, error = %e, "fast-forward main failed");
+                self.record_failure(assignment_id, db_conn, &reason);
+                return IntegrationResult {
+                    worker_id,
+                    assignment_id,
+                    bead_id: bead_id.to_string(),
+                    success: false,
+                    merge_commit: None,
+                    failure_reason: Some(reason),
+                };
+            }
+        }
+
+        // Step 4: Record integration in DB
+        let merged_at = chrono_now_utc();
+        if let Err(e) = db::insert_integration_log(
+            db_conn,
+            assignment_id,
+            &merged_at,
+            &worktree_head,
+            None, // manifest_entries_applied (future: from task_manifest)
+            None, // cross_task_imports (future: from integration agent)
+            false,
+        ) {
+            tracing::warn!(error = %e, "failed to record integration log");
+        }
+
+        // Update assignment status to integrated
+        if let Err(e) =
+            db::update_worker_assignment_status(db_conn, assignment_id, "integrated", None)
+        {
+            tracing::warn!(error = %e, "failed to update assignment status to integrated");
+        }
+
+        // Step 5: Clean up the worktree
+        if let Err(e) = worktree::remove(&self.repo_dir, worktree_path) {
+            tracing::warn!(
+                worker_id,
+                error = %e,
+                "failed to remove worktree after integration"
+            );
+        }
+
+        IntegrationResult {
+            worker_id,
+            assignment_id,
+            bead_id: bead_id.to_string(),
+            success: true,
+            merge_commit: Some(worktree_head),
+            failure_reason: None,
+        }
+    }
+
+    /// Merge main into the branch in the worktree.
+    ///
+    /// This is step 1 of the spec: "In the worker's worktree, merge main into the branch
+    /// (pull main into branch, NOT push branch to main)".
+    fn merge_main_into_branch(&self, worktree_path: &Path) -> Result<(), IntegrationError> {
+        // First, fetch the latest main from the main repo into the worktree.
+        // Since the worktree shares the same .git, we can reference the base_branch directly.
+        let output = Command::new("git")
+            .args(["merge", &self.base_branch, "--no-edit"])
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|e| IntegrationError::Git(format!("failed to run git merge: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(IntegrationError::Git(format!(
+                "git merge {} failed: {}",
+                self.base_branch,
+                stderr.trim()
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Abort a merge that's in a conflicted state.
+    fn abort_merge(&self, worktree_path: &Path) -> Result<(), IntegrationError> {
+        let output = Command::new("git")
+            .args(["merge", "--abort"])
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|e| IntegrationError::Git(format!("failed to run git merge --abort: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(IntegrationError::Git(format!(
+                "git merge --abort failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Get the HEAD commit hash from a worktree.
+    fn get_head_commit(&self, worktree_path: &Path) -> Result<String, IntegrationError> {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(worktree_path)
+            .output()
+            .map_err(|e| IntegrationError::Git(format!("failed to run git rev-parse: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(IntegrationError::Git(format!(
+                "git rev-parse HEAD failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    /// Fast-forward main to the given commit.
+    ///
+    /// This is step 7 of the spec: "Fast-forward main to this branch".
+    /// Uses `git update-ref` in the main repo to advance main's tip.
+    fn fast_forward_main(&self, commit: &str) -> Result<(), IntegrationError> {
+        // Use update-ref to advance main without checking out
+        let output = Command::new("git")
+            .args([
+                "update-ref",
+                &format!("refs/heads/{}", self.base_branch),
+                commit,
+            ])
+            .current_dir(&self.repo_dir)
+            .output()
+            .map_err(|e| IntegrationError::Git(format!("failed to run git update-ref: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(IntegrationError::Git(format!(
+                "git update-ref failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Record a failed integration in the database.
+    fn record_failure(&self, assignment_id: i64, db_conn: &Connection, reason: &str) {
+        if let Err(e) = db::update_worker_assignment_status(
+            db_conn,
+            assignment_id,
+            "integration_failed",
+            Some(reason),
+        ) {
+            tracing::warn!(error = %e, "failed to update assignment status to integration_failed");
+        }
+    }
+}
+
+/// Get current UTC time as ISO 8601 string.
+fn chrono_now_utc() -> String {
+    // Use std::time to avoid adding chrono dependency
+    let now = std::time::SystemTime::now();
+    let duration = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+
+    // Simple UTC timestamp formatting
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+    let seconds = time_secs % 60;
+
+    // Days since epoch to date (simplified algorithm)
+    let mut y = 1970i64;
+    let mut remaining_days = days as i64;
+
+    loop {
+        let days_in_year = if is_leap_year(y) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        y += 1;
+    }
+
+    let month_days = if is_leap_year(y) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut m = 0usize;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining_days < md as i64 {
+            m = i;
+            break;
+        }
+        remaining_days -= md as i64;
+    }
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y,
+        m + 1,
+        remaining_days + 1,
+        hours,
+        minutes,
+        seconds
+    )
+}
+
+fn is_leap_year(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command as StdCommand;
+    use std::process::Stdio;
+    use tempfile::TempDir;
+
+    /// Create a minimal git repo for testing.
+    fn init_test_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.path();
+
+        StdCommand::new("git")
+            .args(["init"])
+            .current_dir(repo)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        StdCommand::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+
+        std::fs::write(repo.join("README.md"), "initial").unwrap();
+        StdCommand::new("git")
+            .args(["add", "."])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(repo)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        StdCommand::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(repo)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        dir
+    }
+
+    /// Create a worktree from the test repo and make a commit in it.
+    fn create_worktree_with_commit(
+        repo_dir: &Path,
+        worktrees_dir: &Path,
+        worker_id: u32,
+        bead_id: &str,
+    ) -> PathBuf {
+        let wt_path =
+            worktree::create(repo_dir, worktrees_dir, worker_id, bead_id, "main").unwrap();
+
+        // Make a change in the worktree
+        std::fs::write(wt_path.join("feature.txt"), format!("work from {bead_id}")).unwrap();
+        StdCommand::new("git")
+            .args(["add", "feature.txt"])
+            .current_dir(&wt_path)
+            .status()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", &format!("implement {bead_id}")])
+            .current_dir(&wt_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        wt_path
+    }
+
+    #[test]
+    fn test_chrono_now_utc_format() {
+        let ts = chrono_now_utc();
+        // Should be ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ
+        assert!(ts.contains('T'));
+        assert!(ts.ends_with('Z'));
+        assert_eq!(ts.len(), 20);
+    }
+
+    #[test]
+    fn test_integration_queue_new() {
+        let queue = IntegrationQueue::new(PathBuf::from("/tmp/repo"), "main".to_string());
+        assert_eq!(queue.repo_dir, PathBuf::from("/tmp/repo"));
+        assert_eq!(queue.base_branch, "main");
+    }
+
+    #[test]
+    fn test_successful_integration() {
+        let dir = init_test_repo();
+        let repo_dir = dir.path();
+        let wt_dir = repo_dir.join("worktrees");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+
+        let db_path = repo_dir.join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        // Insert a worker assignment
+        let assignment_id =
+            db::insert_worker_assignment(&conn, 0, "beads-abc", "/tmp/wt-0", "completed", None)
+                .unwrap();
+
+        // Create a worktree with a commit
+        let wt_path = create_worktree_with_commit(repo_dir, &wt_dir, 0, "beads-abc");
+
+        // Get main's HEAD before integration
+        let main_before = StdCommand::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+        let main_before = String::from_utf8_lossy(&main_before.stdout)
+            .trim()
+            .to_string();
+
+        let queue = IntegrationQueue::new(repo_dir.to_path_buf(), "main".to_string());
+        let result = queue.integrate(0, assignment_id, "beads-abc", &wt_path, &conn);
+
+        assert!(
+            result.success,
+            "integration should succeed: {:?}",
+            result.failure_reason
+        );
+        assert!(result.merge_commit.is_some());
+        assert!(result.failure_reason.is_none());
+        assert_eq!(result.worker_id, 0);
+        assert_eq!(result.bead_id, "beads-abc");
+
+        // Main should have advanced
+        let main_after = StdCommand::new("git")
+            .args(["rev-parse", "main"])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+        let main_after = String::from_utf8_lossy(&main_after.stdout)
+            .trim()
+            .to_string();
+        assert_ne!(main_before, main_after, "main should have advanced");
+
+        // Integration log should be recorded
+        let log = db::integration_log_by_assignment(&conn, assignment_id).unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].merge_commit, result.merge_commit.unwrap());
+
+        // Assignment status should be updated
+        let wa = db::get_worker_assignment(&conn, assignment_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wa.status, "integrated");
+    }
+
+    #[test]
+    fn test_integration_with_merge_conflict() {
+        let dir = init_test_repo();
+        let repo_dir = dir.path();
+        let wt_dir = repo_dir.join("worktrees");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+
+        let db_path = repo_dir.join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        let assignment_id = db::insert_worker_assignment(
+            &conn,
+            0,
+            "beads-conflict",
+            "/tmp/wt-0",
+            "completed",
+            None,
+        )
+        .unwrap();
+
+        // Create a worktree with changes to README.md
+        let wt_path = worktree::create(repo_dir, &wt_dir, 0, "beads-conflict", "main").unwrap();
+
+        std::fs::write(wt_path.join("README.md"), "worktree change").unwrap();
+        StdCommand::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&wt_path)
+            .status()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", "worktree edit"])
+            .current_dir(&wt_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        // Now make a conflicting change on main (in the main repo)
+        std::fs::write(repo_dir.join("README.md"), "main change").unwrap();
+        StdCommand::new("git")
+            .args(["add", "README.md"])
+            .current_dir(repo_dir)
+            .status()
+            .unwrap();
+        StdCommand::new("git")
+            .args(["commit", "-m", "main edit"])
+            .current_dir(repo_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        let queue = IntegrationQueue::new(repo_dir.to_path_buf(), "main".to_string());
+        let result = queue.integrate(0, assignment_id, "beads-conflict", &wt_path, &conn);
+
+        assert!(!result.success, "integration should fail due to conflict");
+        assert!(result.merge_commit.is_none());
+        assert!(result.failure_reason.is_some());
+        assert!(result
+            .failure_reason
+            .as_ref()
+            .unwrap()
+            .contains("merge failed"));
+
+        // Assignment status should reflect failure
+        let wa = db::get_worker_assignment(&conn, assignment_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(wa.status, "integration_failed");
+        assert!(wa.failure_notes.is_some());
+    }
+
+    #[test]
+    fn test_integration_no_changes_trivial_merge() {
+        // When worktree has no changes beyond main, merge is a no-op (already up to date)
+        let dir = init_test_repo();
+        let repo_dir = dir.path();
+        let wt_dir = repo_dir.join("worktrees");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+
+        let db_path = repo_dir.join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        let assignment_id =
+            db::insert_worker_assignment(&conn, 0, "beads-noop", "/tmp/wt-0", "completed", None)
+                .unwrap();
+
+        // Create worktree but add a new file (no conflict with main)
+        let wt_path = create_worktree_with_commit(repo_dir, &wt_dir, 0, "beads-noop");
+
+        let queue = IntegrationQueue::new(repo_dir.to_path_buf(), "main".to_string());
+        let result = queue.integrate(0, assignment_id, "beads-noop", &wt_path, &conn);
+
+        assert!(
+            result.success,
+            "trivial merge should succeed: {:?}",
+            result.failure_reason
+        );
+        assert!(result.merge_commit.is_some());
+    }
+
+    #[test]
+    fn test_integration_error_display() {
+        let e = IntegrationError::Git("something broke".to_string());
+        assert!(e.to_string().contains("something broke"));
+
+        let e = IntegrationError::Worktree(worktree::WorktreeError::BranchNotFound(
+            "develop".to_string(),
+        ));
+        assert!(e.to_string().contains("develop"));
+    }
+
+    #[test]
+    fn test_get_head_commit() {
+        let dir = init_test_repo();
+        let queue = IntegrationQueue::new(dir.path().to_path_buf(), "main".to_string());
+
+        let head = queue.get_head_commit(dir.path()).unwrap();
+        assert!(!head.is_empty());
+        // SHA-1 hashes are 40 hex characters
+        assert_eq!(head.len(), 40);
+        assert!(head.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_is_leap_year() {
+        assert!(is_leap_year(2000));
+        assert!(is_leap_year(2024));
+        assert!(!is_leap_year(1900));
+        assert!(!is_leap_year(2023));
+    }
+
+    #[test]
+    fn test_merge_main_into_branch_no_divergence() {
+        // When main hasn't changed, merge is "Already up to date"
+        let dir = init_test_repo();
+        let repo_dir = dir.path();
+        let wt_dir = repo_dir.join("worktrees");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+
+        let wt_path = create_worktree_with_commit(repo_dir, &wt_dir, 0, "beads-nomerge");
+
+        let queue = IntegrationQueue::new(repo_dir.to_path_buf(), "main".to_string());
+        let result = queue.merge_main_into_branch(&wt_path);
+        assert!(result.is_ok(), "merge should succeed when no divergence");
+    }
+
+    #[test]
+    fn test_fast_forward_main() {
+        let dir = init_test_repo();
+        let repo_dir = dir.path();
+        let wt_dir = repo_dir.join("worktrees");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+
+        let wt_path = create_worktree_with_commit(repo_dir, &wt_dir, 0, "beads-ff");
+
+        let queue = IntegrationQueue::new(repo_dir.to_path_buf(), "main".to_string());
+
+        // Get the worktree HEAD
+        let wt_head = queue.get_head_commit(&wt_path).unwrap();
+        let main_before = queue.get_head_commit(repo_dir).unwrap();
+
+        // Fast-forward main
+        queue.fast_forward_main(&wt_head).unwrap();
+
+        let main_after = queue.get_head_commit(repo_dir).unwrap();
+        assert_eq!(main_after, wt_head, "main should point to worktree HEAD");
+        assert_ne!(main_before, main_after, "main should have advanced");
+    }
+}

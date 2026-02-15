@@ -8,6 +8,7 @@ mod db;
 mod hooks;
 mod improve;
 mod ingest;
+mod integrator;
 mod metrics;
 mod metrics_cmd;
 mod pool;

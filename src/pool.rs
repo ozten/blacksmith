@@ -22,6 +22,8 @@ pub enum WorkerState {
     Completed,
     /// Worker's agent session failed.
     Failed,
+    /// Worker's completed work is being integrated into main.
+    Integrating,
 }
 
 impl WorkerState {
@@ -31,6 +33,7 @@ impl WorkerState {
             WorkerState::Coding => "coding",
             WorkerState::Completed => "completed",
             WorkerState::Failed => "failed",
+            WorkerState::Integrating => "integrating",
         }
     }
 
@@ -40,6 +43,7 @@ impl WorkerState {
             "coding" => Some(WorkerState::Coding),
             "completed" => Some(WorkerState::Completed),
             "failed" => Some(WorkerState::Failed),
+            "integrating" => Some(WorkerState::Integrating),
             _ => None,
         }
     }
@@ -327,6 +331,36 @@ impl WorkerPool {
             .collect()
     }
 
+    /// Check if any worker is currently in the Integrating state.
+    pub fn has_integrating(&self) -> bool {
+        self.workers
+            .iter()
+            .any(|w| w.state == WorkerState::Integrating)
+    }
+
+    /// Get the next completed worker for integration.
+    /// Returns (worker_id, assignment_id, worktree_path, bead_id).
+    pub fn next_completed(&self) -> Option<(u32, i64, PathBuf, String)> {
+        self.workers
+            .iter()
+            .find(|w| w.state == WorkerState::Completed)
+            .and_then(|w| {
+                Some((
+                    w.id,
+                    w.assignment_id?,
+                    w.worktree_path.clone()?,
+                    w.bead_id.clone()?,
+                ))
+            })
+    }
+
+    /// Mark a worker as currently integrating.
+    pub fn set_integrating(&mut self, worker_id: u32) {
+        if let Some(worker) = self.workers.get_mut(worker_id as usize) {
+            worker.state = WorkerState::Integrating;
+        }
+    }
+
     /// Reset a worker back to idle, cleaning up its worktree.
     pub fn reset_worker(&mut self, worker_id: u32) -> Result<(), PoolError> {
         let worker = self
@@ -510,6 +544,7 @@ mod tests {
             WorkerState::Coding,
             WorkerState::Completed,
             WorkerState::Failed,
+            WorkerState::Integrating,
         ] {
             assert_eq!(WorkerState::from_str(state.as_str()), Some(state));
         }
