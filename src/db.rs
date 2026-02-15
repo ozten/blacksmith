@@ -982,6 +982,19 @@ pub fn all_bead_metrics(conn: &Connection) -> Result<Vec<BeadMetrics>> {
     Ok(rows)
 }
 
+/// List completed bead metrics (where completed_at IS NOT NULL), ordered by bead_id.
+pub fn completed_bead_metrics(conn: &Connection) -> Result<Vec<BeadMetrics>> {
+    let mut stmt = conn.prepare(
+        "SELECT bead_id, sessions, wall_time_secs, total_turns, total_output_tokens, \
+         integration_time_secs, completed_at FROM bead_metrics \
+         WHERE completed_at IS NOT NULL ORDER BY bead_id ASC",
+    )?;
+    let rows = stmt
+        .query_map([], map_bead_metrics)?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 fn map_bead_metrics(row: &rusqlite::Row) -> Result<BeadMetrics> {
     Ok(BeadMetrics {
         bead_id: row.get(0)?,
@@ -2329,6 +2342,52 @@ mod tests {
         assert!(bm.total_output_tokens.is_none());
         assert!(bm.integration_time_secs.is_none());
         assert!(bm.completed_at.is_none());
+    }
+
+    #[test]
+    fn completed_bead_metrics_filters_correctly() {
+        let (_dir, conn) = test_db();
+
+        // Two completed, one not
+        upsert_bead_metrics(
+            &conn,
+            "beads-done1",
+            1,
+            300.0,
+            50,
+            None,
+            None,
+            Some("2026-01-01T00:00:00Z"),
+        )
+        .unwrap();
+        upsert_bead_metrics(
+            &conn,
+            "beads-done2",
+            2,
+            400.0,
+            60,
+            None,
+            None,
+            Some("2026-01-02T00:00:00Z"),
+        )
+        .unwrap();
+        upsert_bead_metrics(&conn, "beads-open", 1, 100.0, 10, None, None, None).unwrap();
+
+        let completed = completed_bead_metrics(&conn).unwrap();
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0].bead_id, "beads-done1");
+        assert_eq!(completed[1].bead_id, "beads-done2");
+    }
+
+    #[test]
+    fn completed_bead_metrics_empty_when_none_completed() {
+        let (_dir, conn) = test_db();
+
+        upsert_bead_metrics(&conn, "beads-open1", 1, 100.0, 10, None, None, None).unwrap();
+        upsert_bead_metrics(&conn, "beads-open2", 1, 200.0, 20, None, None, None).unwrap();
+
+        let completed = completed_bead_metrics(&conn).unwrap();
+        assert!(completed.is_empty());
     }
 
     // ── Recent Integration Log (view) tests ─────────────────────────────

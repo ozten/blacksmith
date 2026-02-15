@@ -1,34 +1,29 @@
-## Last Session: Implement git revert rollback with entanglement tracking (dfe)
+## Last Session: Implement serial and parallel time estimation from bead_metrics (ml7)
 
 ### Completed
-- Added `blacksmith integration rollback <bead-id> [--force]` CLI command
-- Implemented `IntegrationQueue::rollback()` in integrator.rs:
-  - Checks entanglement via cross_task_imports in integration_log
-  - Blocks rollback if other integrated tasks depend on this bead (unless --force)
-  - Syncs working tree (git reset --hard HEAD) before reverting
-  - Runs `git revert --no-edit <merge_commit>` to undo code changes
-  - Updates assignment status to "rolled_back"
-- Added `RollbackResult` struct with success, reverted_commit, manifest_entries_reversed, blocked_by
-- Added `task_manifest::reverse()` function — inverse of apply():
-  - Removes lines from lib.rs/mod.rs/index.ts that were added
-  - Removes Cargo.toml dependencies that were added
-  - Handles all manifest entry types (lib_rs, mod_rs, cargo_toml, ts_index)
-- Added DB functions in db.rs:
-  - `find_integration_by_bead()`: finds most recent integration log entry by bead_id
-  - `find_entangled_beads()`: finds beads whose cross_task_imports reference a given bead
-- Added 19 new tests (733 total passing):
-  - DB: find_integration_by_bead (none, found, most_recent)
-  - DB: find_entangled_beads (empty, finds_dependents, excludes_self, excludes_non_integrated)
-  - Integrator: rollback_successful, rollback_blocked_by_entanglement, rollback_forced_despite_entanglement, rollback_result_fields
-  - Task manifest: reverse_lib_rs, reverse_cargo_toml, reverse_mod_rs, reverse_nonexistent, reverse_already_absent, apply_then_reverse_roundtrip
-  - Main: rollback_no_integration_found, rollback_already_rolled_back
+- Created `src/estimation.rs` module with serial and parallel time estimation:
+  - `estimate()`: main entry point, takes DB connection, open beads, and worker count
+  - Serial estimate: avg_time = sum(wall_time_secs) / count(completed), remaining = count(open) * avg_time
+  - Returns "insufficient data" if < 3 completed beads
+  - Parallel estimate: builds dependency DAG from open beads, finds critical path via Kahn's algorithm
+  - parallel_time = max(critical_path_time, serial_time / N) + integration_overhead
+  - Integration overhead = avg_integration_time * count(open beads)
+  - Cycle detection: beads in dependency cycles are excluded from the DAG and reported
+  - `query_open_beads()`: shells out to `bd list --status=open --json` and parses result
+  - `format_estimate()`: formats estimate for human-readable CLI output
+  - `format_duration()`: converts seconds to "Xs", "Xm", or "Xh Ym" format
+- Added `completed_bead_metrics()` to `src/db.rs` — filters bead_metrics for completed_at IS NOT NULL
+- Wired `blacksmith estimate [--workers N]` CLI subcommand in `src/main.rs`
+- Added 25 new tests (758 total passing):
+  - estimation: format_duration (4 tests), compute_critical_path (7 tests), parse_open_beads_json (4 tests), estimate integration (4 tests), format_estimate (3 tests)
+  - db: completed_bead_metrics (2 tests)
 
 ### Key Files Modified
-- `src/main.rs` — CLI `Rollback` subcommand + handler
-- `src/integrator.rs` — `rollback()` method + `RollbackResult` struct
-- `src/db.rs` — `find_integration_by_bead()` + `find_entangled_beads()` query functions
-- `src/task_manifest.rs` — `reverse()` + `reverse_lines_from_file()` + `reverse_cargo_toml_additions()`
+- `src/estimation.rs` — NEW: time estimation module
+- `src/db.rs` — `completed_bead_metrics()` query function
+- `src/main.rs` — `mod estimation`, `Commands::Estimate` CLI subcommand + handler
 
 ### Suggested Next Tasks
-- **ml7**: Implement serial and parallel time estimation from bead_metrics (P2)
+- **506**: Add progress and ETA to blacksmith run and --status output (P2, now unblocked by ml7)
 - **ec1**: Implement codex agent adapter (P3)
+- **c37**: Implement blacksmith metrics beads per-bead timing report (P3)

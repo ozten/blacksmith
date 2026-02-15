@@ -6,6 +6,7 @@ mod config;
 mod coordinator;
 mod data_dir;
 mod db;
+mod estimation;
 mod gc;
 mod hooks;
 mod improve;
@@ -123,6 +124,12 @@ enum Commands {
     Integration {
         #[command(subcommand)]
         action: IntegrationAction,
+    },
+    /// Show time estimates for completing remaining beads
+    Estimate {
+        /// Number of parallel workers (overrides config workers.max)
+        #[arg(long)]
+        workers: Option<u32>,
     },
 }
 
@@ -768,6 +775,24 @@ async fn main() {
                 }
             }
         }
+        return;
+    }
+
+    if let Some(Commands::Estimate { workers }) = &cli.command {
+        let config_for_estimate = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = data_dir::DataDir::new(&config_for_estimate.storage.data_dir);
+        let db_path = dd.db();
+        let conn = match db::open_or_create(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error opening database: {e}");
+                std::process::exit(1);
+            }
+        };
+        let num_workers = workers.unwrap_or(config_for_estimate.workers.max);
+        let open_beads = estimation::query_open_beads();
+        let est = estimation::estimate(&conn, &open_beads, num_workers);
+        println!("{}", estimation::format_estimate(&est));
         return;
     }
 

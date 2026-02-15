@@ -1798,3 +1798,34 @@
 ### Suggested Next Tasks
 - **ml7**: Implement serial and parallel time estimation from bead_metrics (P2)
 - **ec1**: Implement codex agent adapter (P3)
+
+--- 2026-02-15 17:52:04 | simple-agent-harness-ml7 ---
+## Last Session: Implement serial and parallel time estimation from bead_metrics (ml7)
+
+### Completed
+- Created `src/estimation.rs` module with serial and parallel time estimation:
+  - `estimate()`: main entry point, takes DB connection, open beads, and worker count
+  - Serial estimate: avg_time = sum(wall_time_secs) / count(completed), remaining = count(open) * avg_time
+  - Returns "insufficient data" if < 3 completed beads
+  - Parallel estimate: builds dependency DAG from open beads, finds critical path via Kahn's algorithm
+  - parallel_time = max(critical_path_time, serial_time / N) + integration_overhead
+  - Integration overhead = avg_integration_time * count(open beads)
+  - Cycle detection: beads in dependency cycles are excluded from the DAG and reported
+  - `query_open_beads()`: shells out to `bd list --status=open --json` and parses result
+  - `format_estimate()`: formats estimate for human-readable CLI output
+  - `format_duration()`: converts seconds to "Xs", "Xm", or "Xh Ym" format
+- Added `completed_bead_metrics()` to `src/db.rs` — filters bead_metrics for completed_at IS NOT NULL
+- Wired `blacksmith estimate [--workers N]` CLI subcommand in `src/main.rs`
+- Added 25 new tests (758 total passing):
+  - estimation: format_duration (4 tests), compute_critical_path (7 tests), parse_open_beads_json (4 tests), estimate integration (4 tests), format_estimate (3 tests)
+  - db: completed_bead_metrics (2 tests)
+
+### Key Files Modified
+- `src/estimation.rs` — NEW: time estimation module
+- `src/db.rs` — `completed_bead_metrics()` query function
+- `src/main.rs` — `mod estimation`, `Commands::Estimate` CLI subcommand + handler
+
+### Suggested Next Tasks
+- **506**: Add progress and ETA to blacksmith run and --status output (P2, now unblocked by ml7)
+- **ec1**: Implement codex agent adapter (P3)
+- **c37**: Implement blacksmith metrics beads per-bead timing report (P3)
