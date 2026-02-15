@@ -1184,3 +1184,35 @@
 - **3mu**: Wire multi-agent coordinator into blacksmith run (P1, blocked on this)
 - **x1a**: Implement session compression with zstd (P2)
 - **e2l**: Implement raw adapter with pass-through extraction (P2)
+
+--- 2026-02-15 15:58:27 | simple-agent-harness-3mu ---
+## Last Session: Wire multi-agent coordinator into blacksmith run (3mu)
+
+### Completed
+- Created src/coordinator.rs with the multi-agent coordinator loop
+  - CoordinatorSummary and CoordinatorExitReason types (analogous to RunSummary/ExitReason)
+  - Main coordinator loop: polls completions, schedules ready beads, spawns workers
+  - Uses scheduler::next_assignable_tasks for conflict-free assignment
+  - Uses WorkerPool for spawning/polling/resetting workers
+  - Handles shutdown signals and STOP file
+  - Exits with NoWork after 3 consecutive polls with no ready beads and no active workers
+  - build_in_progress_list: extracts in-progress assignments from pool snapshot
+  - query_ready_beads: shells out to `bd list --status=open --format=json`
+  - parse_ready_beads_json: parses JSON bead list with affected set extraction
+  - 8 tests: NoWork exit, Signal exit, StopFile exit, JSON parsing (valid/empty/invalid/missing fields/no design), empty pool in-progress list
+- Wired into main.rs:
+  - Added `mod coordinator` declaration
+  - Updated run path: `workers.max > 1` → coordinator::run, else runner::run (serial loop)
+  - Single-worker mode (workers.max = 1, the default) behaves identically to V2
+- All 548 tests pass, clippy clean, fmt clean
+
+### Current State
+- Coordinator is wired and functional but query_ready_beads is a stub that shells to `bd`
+- For production use, it will need proper bead querying (direct DB or bd CLI integration)
+- The affected_globs in build_in_progress_list defaults to None (conservative: locks everything)
+  - Future improvement: store affected_globs on the Worker struct for precise scheduling
+
+### Suggested Next Tasks
+- **3pa**: Implement integration queue and merge-main-into-branch step (P1, unblocked by this)
+- **x1a**: Implement session compression with zstd (P2)
+- **e2l**: Implement raw adapter with pass-through extraction (P2)

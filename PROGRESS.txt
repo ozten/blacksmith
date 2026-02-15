@@ -1,26 +1,30 @@
-## Last Session: Implement scheduler for assigning beads to idle workers (1ky)
+## Last Session: Wire multi-agent coordinator into blacksmith run (3mu)
 
 ### Completed
-- Extended src/scheduler.rs with scheduler types and assignment logic
-- Added `ReadyBead` struct: id, priority, affected_globs (Option<Vec<String>>)
-- Added `InProgressAssignment` struct: bead_id, affected_globs (Option<Vec<String>>)
-- Implemented `next_assignable_tasks(ready_beads, in_progress)`:
-  - Returns bead IDs whose affected sets don't overlap with any in-progress task
-  - Handles None affected sets (= "affects everything") for both beads and assignments
-  - If any in-progress task has no affected set, no new tasks can be assigned
-  - If nothing is in progress, all ready beads are assignable
-  - Preserves input order (caller sorts by priority)
-- Implemented `schedule_next(ready_beads, in_progress)`:
-  - Picks the first (highest-priority) non-conflicting bead
-  - Returns None if nothing can be assigned
-- 15 new scheduler tests covering all edge cases
-- All 539 tests pass, clippy clean, fmt clean
+- Created src/coordinator.rs with the multi-agent coordinator loop
+  - CoordinatorSummary and CoordinatorExitReason types (analogous to RunSummary/ExitReason)
+  - Main coordinator loop: polls completions, schedules ready beads, spawns workers
+  - Uses scheduler::next_assignable_tasks for conflict-free assignment
+  - Uses WorkerPool for spawning/polling/resetting workers
+  - Handles shutdown signals and STOP file
+  - Exits with NoWork after 3 consecutive polls with no ready beads and no active workers
+  - build_in_progress_list: extracts in-progress assignments from pool snapshot
+  - query_ready_beads: shells out to `bd list --status=open --format=json`
+  - parse_ready_beads_json: parses JSON bead list with affected set extraction
+  - 8 tests: NoWork exit, Signal exit, StopFile exit, JSON parsing (valid/empty/invalid/missing fields/no design), empty pool in-progress list
+- Wired into main.rs:
+  - Added `mod coordinator` declaration
+  - Updated run path: `workers.max > 1` → coordinator::run, else runner::run (serial loop)
+  - Single-worker mode (workers.max = 1, the default) behaves identically to V2
+- All 548 tests pass, clippy clean, fmt clean
 
 ### Current State
-- scheduler.rs now has full scheduling logic ready for the coordinator
-- Reference: SPEC-v3-agents.md lines 462-489
+- Coordinator is wired and functional but query_ready_beads is a stub that shells to `bd`
+- For production use, it will need proper bead querying (direct DB or bd CLI integration)
+- The affected_globs in build_in_progress_list defaults to None (conservative: locks everything)
+  - Future improvement: store affected_globs on the Worker struct for precise scheduling
 
 ### Suggested Next Tasks
-- **3mu**: Wire multi-agent coordinator into blacksmith run (P1, blocked on this)
+- **3pa**: Implement integration queue and merge-main-into-branch step (P1, unblocked by this)
 - **x1a**: Implement session compression with zstd (P2)
 - **e2l**: Implement raw adapter with pass-through extraction (P2)
