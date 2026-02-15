@@ -1932,3 +1932,31 @@
 - **2su**: Implement aider agent adapter (P3)
 - **hhv**: Implement blacksmith metrics reingest command (P3)
 - **c37**: Implement blacksmith metrics beads per-bead timing report (P3)
+
+--- 2026-02-15 18:14:45 | simple-agent-harness-2su ---
+## Last Session: Implement aider agent adapter (2su)
+
+### Completed
+- Created `src/adapters/aider.rs` — full AiderAdapter implementation
+  - Parses Aider's plain-text chat log format
+  - Extracts turns.total by counting assistant response blocks between user prompts ("> " lines)
+  - Extracts cost.estimate_usd from Aider's cost-reporting lines ("$X.XX session")
+  - Extracts session.output_bytes from file size
+  - Supports session.exit_code and session.duration_secs (declared but come from harness)
+  - Implements lines_for_source for all ExtractionSource variants
+  - Detects /run commands and "Running:" lines as tool_commands
+- Added `pub mod aider` to `src/adapters/mod.rs`
+- Added `"aider"` match arm in `create_adapter()`
+- Added `test_create_adapter_aider` test in mod.rs
+- Added "aider" to adapter list in `handle_adapter_list()` in main.rs
+- 15 new tests in aider.rs, 1 new test in mod.rs
+- All 835 tests passing
+
+### Key Files Modified
+- `src/adapters/aider.rs` (new) — AiderAdapter implementation with 15 tests
+- `src/adapters/mod.rs` — module declaration, create_adapter match, 1 new test
+- `src/main.rs` — added "aider" to adapter list display
+
+### Suggested Next Tasks
+- **hhv**: Implement blacksmith metrics reingest command (P3)
+- **c37**: Implement blacksmith metrics beads per-bead timing report (P3)

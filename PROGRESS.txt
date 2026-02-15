@@ -1,17 +1,26 @@
-## Last Session: Implement blacksmith adapter info/list/test commands (zb5)
+## Last Session: Implement aider agent adapter (2su)
 
 ### Completed
-- Added `blacksmith adapter info` — shows detected/configured adapter and supported metrics
-- Added `blacksmith adapter list` — lists all available adapters (claude, codex, opencode, raw) with their supported metrics
-- Added `blacksmith adapter test <file>` — parses a session file with the configured adapter and displays extracted metrics
-- Added `AdapterAction` enum with `Info`, `List`, `Test` subcommands
-- Wired into main.rs command dispatch alongside existing subcommands
-- Added 6 new tests (818 total passing)
+- Created `src/adapters/aider.rs` — full AiderAdapter implementation
+  - Parses Aider's plain-text chat log format
+  - Extracts turns.total by counting assistant response blocks between user prompts ("> " lines)
+  - Extracts cost.estimate_usd from Aider's cost-reporting lines ("$X.XX session")
+  - Extracts session.output_bytes from file size
+  - Supports session.exit_code and session.duration_secs (declared but come from harness)
+  - Implements lines_for_source for all ExtractionSource variants
+  - Detects /run commands and "Running:" lines as tool_commands
+- Added `pub mod aider` to `src/adapters/mod.rs`
+- Added `"aider"` match arm in `create_adapter()`
+- Added `test_create_adapter_aider` test in mod.rs
+- Added "aider" to adapter list in `handle_adapter_list()` in main.rs
+- 15 new tests in aider.rs, 1 new test in mod.rs
+- All 835 tests passing
 
 ### Key Files Modified
-- `src/main.rs` — added `Adapter` command variant, `AdapterAction` enum, three handler functions, and tests
+- `src/adapters/aider.rs` (new) — AiderAdapter implementation with 15 tests
+- `src/adapters/mod.rs` — module declaration, create_adapter match, 1 new test
+- `src/main.rs` — added "aider" to adapter list display
 
 ### Suggested Next Tasks
-- **2su**: Implement aider agent adapter (P3)
 - **hhv**: Implement blacksmith metrics reingest command (P3)
 - **c37**: Implement blacksmith metrics beads per-bead timing report (P3)

@@ -1,3 +1,4 @@
+pub mod aider;
 pub mod claude;
 pub mod codex;
 pub mod opencode;
@@ -132,6 +133,7 @@ pub fn create_adapter(adapter_name: &str) -> Box<dyn AgentAdapter> {
         "claude" => Box::new(claude::ClaudeAdapter::new()),
         "codex" => Box::new(codex::CodexAdapter::new()),
         "opencode" => Box::new(opencode::OpencodeAdapter::new()),
+        "aider" => Box::new(aider::AiderAdapter::new()),
         _ => Box::new(raw::RawAdapter::new()),
     }
 }
@@ -243,6 +245,12 @@ mod tests {
     fn test_create_adapter_opencode() {
         let adapter = create_adapter("opencode");
         assert_eq!(adapter.name(), "opencode");
+    }
+
+    #[test]
+    fn test_create_adapter_aider() {
+        let adapter = create_adapter("aider");
+        assert_eq!(adapter.name(), "aider");
     }
 
     #[test]

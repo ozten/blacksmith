@@ -700,7 +700,7 @@ fn handle_adapter_info(config: &HarnessConfig) {
 
 /// Handle `blacksmith adapter list` — list all available adapters.
 fn handle_adapter_list() {
-    let all_names = ["claude", "codex", "opencode", "raw"];
+    let all_names = ["claude", "codex", "opencode", "aider", "raw"];
 
     for name in &all_names {
         let adapter = adapters::create_adapter(name);
