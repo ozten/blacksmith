@@ -98,6 +98,8 @@ pub fn open_or_create(path: &Path) -> Result<Connection> {
         );",
     )?;
 
+    crate::intent::create_table(&conn)?;
+
     Ok(conn)
 }
 

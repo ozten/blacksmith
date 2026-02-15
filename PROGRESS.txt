@@ -1,16 +1,18 @@
-## Last Session: Singleton Lock Verification (2026-02-15)
+## Last Session: Intent Analysis Data Model (2026-02-15)
 
 ### What Was Done
-- Verified that bead simple-agent-harness-ckq (P0 bug: singleton lock) was already fully implemented
-- src/singleton.rs: Complete flock-based lock with PID diagnostics, stale detection, drop-based release
-- src/data_dir.rs:49: lock() method provides .blacksmith/lock path
-- src/main.rs:1248: Lock acquired before coordinator/runner execution
-- All 5 singleton tests pass
+- Created src/intent.rs with IntentAnalysis struct, TargetArea struct, content hashing, and SQLite caching layer
+- IntentAnalysis has task_id, content_hash (hash of title+description+acceptance criteria), and target_areas (Vec<TargetArea>)
+- DB table intent_analyses with UNIQUE(task_id, content_hash) constraint, keyed by content_hash for cache lookups
+- Functions: content_hash(), create_table(), get_by_content_hash(), get_by_task_id(), store()
+- 8 unit tests covering deterministic hashing, store/retrieve, cache miss, upsert, empty areas
+- Registered module in main.rs, integrated table creation into db::open_or_create()
 
 ### Current State
-- No code changes needed — feature was already complete
-- 24 beads from PRD decomposition, 4 ready to work (after this one closes)
+- All tests pass, clippy clean, fmt clean
+- Dead code warnings on intent.rs functions are expected — downstream beads will use them
+- Bead simple-agent-harness-5f1 closed
 
 ### Suggested Next Tasks
-- P1 ready beads: 5f1 (intent data model), 0lk (file resolution model)
-- These unlock the most downstream work
+- simple-agent-harness-0lk (P1): Add file resolution data model and cache (similar pattern to intent)
+- simple-agent-harness-d42 (P1): Implement LLM-based intent analysis (now unblocked by 5f1)

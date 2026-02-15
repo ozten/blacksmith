@@ -10,9 +10,11 @@ mod db;
 mod estimation;
 mod gc;
 mod hooks;
+mod import_graph;
 mod improve;
 mod ingest;
 mod integrator;
+mod intent;
 mod metrics;
 mod metrics_cmd;
 mod migrate;
@@ -25,6 +27,7 @@ mod runner;
 mod scheduler;
 mod session;
 mod signals;
+mod singleton;
 mod status;
 mod task_manifest;
 mod watchdog;
@@ -1241,6 +1244,15 @@ async fn main() {
         }
         return;
     }
+
+    // Acquire singleton lock to prevent concurrent instances
+    let _lock = match singleton::try_acquire(&data_dir.lock()) {
+        Ok(guard) => guard,
+        Err(e) => {
+            tracing::error!("{e}");
+            std::process::exit(1);
+        }
+    };
 
     // Install signal handlers
     let signals = signals::SignalHandler::install();

@@ -2120,3 +2120,23 @@
 
 ### Suggested Next Tasks
 - Check `bd ready` for next available work
+
+--- 2026-02-15 20:45:07 | simple-agent-harness-5f1 ---
+## Last Session: Intent Analysis Data Model (2026-02-15)
+
+### What Was Done
+- Created src/intent.rs with IntentAnalysis struct, TargetArea struct, content hashing, and SQLite caching layer
+- IntentAnalysis has task_id, content_hash (hash of title+description+acceptance criteria), and target_areas (Vec<TargetArea>)
+- DB table intent_analyses with UNIQUE(task_id, content_hash) constraint, keyed by content_hash for cache lookups
+- Functions: content_hash(), create_table(), get_by_content_hash(), get_by_task_id(), store()
+- 8 unit tests covering deterministic hashing, store/retrieve, cache miss, upsert, empty areas
+- Registered module in main.rs, integrated table creation into db::open_or_create()
+
+### Current State
+- All tests pass, clippy clean, fmt clean
+- Dead code warnings on intent.rs functions are expected — downstream beads will use them
+- Bead simple-agent-harness-5f1 closed
+
+### Suggested Next Tasks
+- simple-agent-harness-0lk (P1): Add file resolution data model and cache (similar pattern to intent)
+- simple-agent-harness-d42 (P1): Implement LLM-based intent analysis (now unblocked by 5f1)
