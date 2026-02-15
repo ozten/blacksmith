@@ -1,17 +1,15 @@
-## Last Session: File Resolution Data Model and Cache (2026-02-15)
+## Last Session: Expansion Event Tracking (2026-02-15)
 
 ### What Was Done
-- Created src/file_resolution.rs implementing Layer 2 (File Resolution) data model and cache
-- FileResolutionMapping struct: concept -> resolved_files + resolved_modules
-- FileResolution struct: task_id, base_commit, intent_hash, mappings, derived fields
-- DerivedFields struct: affected_modules, blast_radius, boundary_signatures
-- DB table `file_resolutions` with UNIQUE(task_id, base_commit, intent_hash) constraint
-- Indexes on (task_id, base_commit) and (base_commit) for efficient lookups
-- Cache functions: get() (by full key triple), get_latest_for_task(), store(), invalidate_stale(), is_fresh()
-- invalidate_stale() deletes entries with non-matching base_commit for lazy regeneration
-- Registered module in src/main.rs
-- 14 tests covering: store/retrieve, cache miss, different commit/intent misses, upsert, get_latest_for_task, invalidation, freshness checks, empty data, multiple tasks same commit
-- Bead simple-agent-harness-0lk closed
+- Created src/expansion_event.rs implementing expansion event tracking for affected-set mismatches
+- ExpansionEvent struct: task_id, predicted_modules, actual_modules, expansion_reason, timestamp
+- DB table `expansion_events` with indexes on task_id and timestamp
+- API functions: create_table(), record(), get_by_task(), get_recent(), count_by_module(), count_recent_expansions()
+- count_by_module() identifies modules with poor boundary containment (frequent in actual_modules)
+- count_recent_expansions() counts events within a sliding window of recent tasks (for threshold triggers)
+- Registered module in src/main.rs and table creation in src/db.rs
+- 9 tests covering: record/retrieve, empty results, multiple events same task, get_recent ordering, count_by_module, count_recent_expansions, empty modules, cross-task events
+- Bead simple-agent-harness-74e closed
 
 ### Current State
 - All tests pass (except coordinator test which is a pre-existing known slow test)
@@ -19,5 +17,6 @@
 - fmt clean
 
 ### Suggested Next Tasks
-- simple-agent-harness-ikw (P1): Implement file resolution from intent concepts (now unblocked)
+- simple-agent-harness-4wc (P2): Implement historical signal correlator (now unblocked by this)
 - simple-agent-harness-ldy (P2): Add integration loop iteration tracking
+- simple-agent-harness-34d (P3): Add architecture agent configuration knobs
