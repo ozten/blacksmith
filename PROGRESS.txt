@@ -1,16 +1,16 @@
-## Last Session: PRD Decomposition (2026-02-15)
+## Last Session: Singleton Lock Verification (2026-02-15)
 
 ### What Was Done
-- Decomposed PRD (prd/automated-architecture-and-metadata.md) into 24 beads with full dependency wiring
-- Three major areas covered: Two-Phase Task Metadata, Automated Architecture Agent, Migration Maps
-- All beads have descriptions referencing specific PRD sections
+- Verified that bead simple-agent-harness-ckq (P0 bug: singleton lock) was already fully implemented
+- src/singleton.rs: Complete flock-based lock with PID diagnostics, stale detection, drop-based release
+- src/data_dir.rs:49: lock() method provides .blacksmith/lock path
+- src/main.rs:1248: Lock acquired before coordinator/runner execution
+- All 5 singleton tests pass
 
 ### Current State
-- 24 new open beads, 5 ready to work (no blockers)
-- Ready beads: 4a1 (import graph parser, P1), 5f1 (intent data model, P1), 0lk (file resolution model, P1), ldy (integration loop tracking, P2), 34d (config knobs, P3)
-- Dependency graph fans out from 3 roots: import graph parser, intent model, file resolution model
+- No code changes needed — feature was already complete
+- 24 beads from PRD decomposition, 4 ready to work (after this one closes)
 
 ### Suggested Next Tasks
-- Start with P1 ready beads: 4a1 (import graph parser), 5f1 (intent data model), 0lk (file resolution model)
+- P1 ready beads: 5f1 (intent data model), 0lk (file resolution model)
 - These unlock the most downstream work
-- 4a1 is the highest-value starting point — it unblocks 7 direct dependents
