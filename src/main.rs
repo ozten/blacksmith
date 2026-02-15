@@ -1,6 +1,7 @@
 mod config;
 mod hooks;
 mod metrics;
+mod prompt;
 mod retry;
 mod runner;
 mod session;

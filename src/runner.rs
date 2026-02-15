@@ -5,6 +5,7 @@
 use crate::config::HarnessConfig;
 use crate::hooks::{HookEnv, HookRunner};
 use crate::metrics::{EventLog, SessionEvent};
+use crate::prompt;
 use crate::retry::{RetryDecision, RetryPolicy};
 use crate::session::{self, SessionResult};
 use crate::signals::SignalHandler;
@@ -96,11 +97,11 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
             break;
         }
 
-        // 2. Read prompt
-        let prompt = match read_prompt(&config.session.prompt_file) {
+        // 2. Assemble prompt (read file + run prepend_commands)
+        let prompt = match prompt::assemble(&config.prompt, &config.session.prompt_file) {
             Ok(p) => p,
             Err(e) => {
-                tracing::error!(error = %e, path = %config.session.prompt_file.display(), "failed to read prompt file");
+                tracing::error!(error = %e, "failed to assemble prompt");
                 exit_reason = ExitReason::PromptError;
                 status.update(HarnessState::ShuttingDown);
                 break;
@@ -526,11 +527,6 @@ async fn run_session_with_watchdog(
         output_file: output_path.to_path_buf(),
         pid,
     })
-}
-
-/// Read the prompt file contents.
-fn read_prompt(path: &std::path::Path) -> Result<String, std::io::Error> {
-    std::fs::read_to_string(path)
 }
 
 /// Load the global iteration counter from a file. Returns 0 if the file
