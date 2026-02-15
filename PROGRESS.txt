@@ -1,24 +1,24 @@
-## Last Session: Implement codex agent adapter (ec1)
+## Last Session: Implement opencode agent adapter (y74)
 
 ### Completed
-- Created `src/adapters/codex.rs` implementing the `AgentAdapter` trait for OpenAI Codex CLI
-- Parses Codex `--json` JSONL output format: `turn.completed`, `item.completed`, `thread.started` events
-- Supported metrics: `turns.total`, `turns.tool_calls`, `session.output_bytes`, `session.exit_code`, `session.duration_secs`
-- Gracefully skips unsupported metrics: `turns.narration_only`, `turns.parallel`, `cost.*`
-- Source mapping: `tool_commands` → `command_execution` items (strips `bash -lc` prefix), `text` → `agent_message` items, `raw` → all lines
-- Counts `file_change`, `mcp_tool_call`, `web_search` item types as tool calls
-- Duration calculated from first/last event timestamps
-- Exit code taken from last `command_execution` item
+- Created `src/adapters/opencode.rs` implementing the `AgentAdapter` trait for OpenCode
+- Handles two input formats: JSONL (line-by-line messages) and single JSON (session export)
+- Single JSON supports: array of messages, object with `messages` key, nested `session.messages`
+- Supported metrics: `turns.total`, `turns.tool_calls`, `cost.input_tokens`, `cost.output_tokens` (when available), `session.output_bytes`, `session.exit_code`, `session.duration_secs`
+- OpenCode message parts: `text`, `toolCall`/`tool_call`, `toolResult`/`tool_result`, `finish`
+- Token accumulation from message-level `usage` field (both `input_tokens`/`output_tokens` and `prompt_tokens`/`completion_tokens` keys)
+- Session-level token extraction from wrapper objects in session exports
+- Duration calculated from message timestamps (created_at, finished_at, timestamp, updated_at)
+- Text/tool extraction scoped to assistant messages only (matches codex adapter pattern)
 - Registered module in `src/adapters/mod.rs` and wired into `create_adapter()`
-- Updated existing test that expected codex to fall back to raw adapter
-- Added 18 new tests (788 total passing)
+- Added 24 new tests (812 total passing)
 
 ### Key Files Modified
-- `src/adapters/codex.rs` — new file, CodexAdapter implementation
-- `src/adapters/mod.rs` — added `pub mod codex`, wired `create_adapter`, updated test
+- `src/adapters/opencode.rs` — new file, OpencodeAdapter implementation
+- `src/adapters/mod.rs` — added `pub mod opencode`, wired `create_adapter`, added test
 
 ### Suggested Next Tasks
-- **y74**: Implement opencode agent adapter (P3)
 - **2su**: Implement aider agent adapter (P3)
 - **zb5**: Implement blacksmith adapter info/list/test commands (P3)
+- **hhv**: Implement blacksmith metrics reingest command (P3)
 - **c37**: Implement blacksmith metrics beads per-bead timing report (P3)

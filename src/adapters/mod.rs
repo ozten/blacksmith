@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod opencode;
 pub mod raw;
 
 use serde_json::Value;
@@ -130,6 +131,7 @@ pub fn create_adapter(adapter_name: &str) -> Box<dyn AgentAdapter> {
     match adapter_name {
         "claude" => Box::new(claude::ClaudeAdapter::new()),
         "codex" => Box::new(codex::CodexAdapter::new()),
+        "opencode" => Box::new(opencode::OpencodeAdapter::new()),
         _ => Box::new(raw::RawAdapter::new()),
     }
 }
@@ -235,6 +237,12 @@ mod tests {
     fn test_create_adapter_codex() {
         let adapter = create_adapter("codex");
         assert_eq!(adapter.name(), "codex");
+    }
+
+    #[test]
+    fn test_create_adapter_opencode() {
+        let adapter = create_adapter("opencode");
+        assert_eq!(adapter.name(), "opencode");
     }
 
     #[test]
