@@ -1738,3 +1738,27 @@
 - **7ed**: Implement blacksmith integration log and retry commands (P2)
 - **dfe**: Implement git revert rollback with entanglement tracking (P2)
 - **ml7**: Implement serial and parallel time estimation from bead_metrics (P2, unblocked by this)
+
+--- 2026-02-15 17:40:37 | simple-agent-harness-7ed ---
+## Last Session: Implement blacksmith integration log and retry commands (7ed)
+
+### Completed
+- Added `Integration` subcommand to CLI with `Log` and `Retry` actions
+- `blacksmith integration log [--last N]`: Shows integration history table with assignment ID, bead ID, merge commit (truncated), merged_at timestamp, manifest entries applied, status, and reconciliation indicator
+- `blacksmith integration retry <bead-id>`: Finds the most recent failed/integration_failed assignment for the given bead, resets it to "completed" status, and re-runs the full integration pipeline (merge, manifest, compiler check, integration agent, fast-forward)
+- Added `IntegrationLogView` struct in db.rs for the joined query
+- Added `recent_integration_log()` DB function: queries integration_log joined with worker_assignments, supports optional LIMIT, returns entries in DESC order
+- Added `find_failed_assignment_by_bead()` DB function: finds the most recent failed/integration_failed worker assignment for a given bead_id
+- Added 12 new tests (714 total passing):
+  - DB: recent_integration_log_empty, _returns_entries, _with_limit
+  - DB: find_failed_assignment_none, _finds_integration_failed, _finds_failed_status, _ignores_completed, _returns_most_recent
+  - main: test_integration_log_empty, _with_entries, _with_last, _retry_no_failed_assignment
+
+### Key Files Modified
+- `src/main.rs` — CLI subcommand definition and handler functions
+- `src/db.rs` — New query functions and structs for integration log views
+
+### Suggested Next Tasks
+- **dfe**: Implement git revert rollback with entanglement tracking (P2)
+- **ml7**: Implement serial and parallel time estimation from bead_metrics (P2)
+- **ec1**: Implement codex agent adapter (P3)

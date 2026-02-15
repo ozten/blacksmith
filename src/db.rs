@@ -773,6 +773,89 @@ pub fn integration_log_by_assignment(
     Ok(rows)
 }
 
+/// An integration log entry joined with worker_assignment info for display.
+#[derive(Debug)]
+pub struct IntegrationLogView {
+    pub id: i64,
+    pub assignment_id: i64,
+    pub bead_id: String,
+    pub merged_at: String,
+    pub merge_commit: String,
+    pub manifest_entries_applied: Option<String>,
+    pub cross_task_imports: Option<String>,
+    pub reconciliation_run: bool,
+    pub status: String,
+}
+
+/// Query recent integration log entries joined with worker_assignments.
+/// If `last` is Some, limits to the N most recent entries.
+/// Returns entries ordered by integration_log.id DESC (most recent first).
+pub fn recent_integration_log(
+    conn: &Connection,
+    last: Option<i64>,
+) -> Result<Vec<IntegrationLogView>> {
+    let sql = match last {
+        Some(_) => {
+            "SELECT il.id, il.assignment_id, wa.bead_id, il.merged_at, il.merge_commit, \
+             il.manifest_entries_applied, il.cross_task_imports, il.reconciliation_run, wa.status \
+             FROM integration_log il \
+             JOIN worker_assignments wa ON il.assignment_id = wa.id \
+             ORDER BY il.id DESC LIMIT ?1"
+        }
+        None => {
+            "SELECT il.id, il.assignment_id, wa.bead_id, il.merged_at, il.merge_commit, \
+             il.manifest_entries_applied, il.cross_task_imports, il.reconciliation_run, wa.status \
+             FROM integration_log il \
+             JOIN worker_assignments wa ON il.assignment_id = wa.id \
+             ORDER BY il.id DESC"
+        }
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let rows = match last {
+        Some(n) => stmt
+            .query_map(rusqlite::params![n], map_integration_log_view)?
+            .collect::<Result<Vec<_>>>()?,
+        None => stmt
+            .query_map([], map_integration_log_view)?
+            .collect::<Result<Vec<_>>>()?,
+    };
+    Ok(rows)
+}
+
+/// Find the most recent failed worker assignment for a given bead_id.
+/// Returns the assignment if it exists and is in a failed/integration_failed state.
+pub fn find_failed_assignment_by_bead(
+    conn: &Connection,
+    bead_id: &str,
+) -> Result<Option<WorkerAssignment>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, worker_id, bead_id, worktree_path, status, affected_globs, \
+         started_at, completed_at, failure_notes FROM worker_assignments \
+         WHERE bead_id = ?1 AND status IN ('failed', 'integration_failed') \
+         ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![bead_id], map_worker_assignment)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
+fn map_integration_log_view(row: &rusqlite::Row) -> Result<IntegrationLogView> {
+    Ok(IntegrationLogView {
+        id: row.get(0)?,
+        assignment_id: row.get(1)?,
+        bead_id: row.get(2)?,
+        merged_at: row.get(3)?,
+        merge_commit: row.get(4)?,
+        manifest_entries_applied: row.get(5)?,
+        cross_task_imports: row.get(6)?,
+        reconciliation_run: row.get(7)?,
+        status: row.get(8)?,
+    })
+}
+
 fn map_integration_log(row: &rusqlite::Row) -> Result<IntegrationLogEntry> {
     Ok(IntegrationLogEntry {
         id: row.get(0)?,
@@ -2203,5 +2286,175 @@ mod tests {
         assert!(bm.total_output_tokens.is_none());
         assert!(bm.integration_time_secs.is_none());
         assert!(bm.completed_at.is_none());
+    }
+
+    // ── Recent Integration Log (view) tests ─────────────────────────────
+
+    #[test]
+    fn recent_integration_log_empty() {
+        let (_dir, conn) = test_db();
+        let entries = recent_integration_log(&conn, None).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn recent_integration_log_returns_entries() {
+        let (_dir, conn) = test_db();
+
+        let a1 = insert_worker_assignment(&conn, 0, "beads-abc", "/tmp/wt-0", "integrated", None)
+            .unwrap();
+        let a2 = insert_worker_assignment(&conn, 1, "beads-def", "/tmp/wt-1", "integrated", None)
+            .unwrap();
+
+        insert_integration_log(
+            &conn,
+            a1,
+            "2026-02-15T10:00:00Z",
+            "aaa111",
+            Some("2 entries applied"),
+            None,
+            false,
+        )
+        .unwrap();
+        insert_integration_log(
+            &conn,
+            a2,
+            "2026-02-15T11:00:00Z",
+            "bbb222",
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+        let entries = recent_integration_log(&conn, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        // Most recent first (DESC)
+        assert_eq!(entries[0].bead_id, "beads-def");
+        assert_eq!(entries[0].merge_commit, "bbb222");
+        assert!(entries[0].reconciliation_run);
+        assert_eq!(entries[0].status, "integrated");
+        assert_eq!(entries[1].bead_id, "beads-abc");
+        assert_eq!(entries[1].merge_commit, "aaa111");
+        assert_eq!(
+            entries[1].manifest_entries_applied.as_deref(),
+            Some("2 entries applied")
+        );
+    }
+
+    #[test]
+    fn recent_integration_log_with_limit() {
+        let (_dir, conn) = test_db();
+
+        for i in 0..5 {
+            let aid = insert_worker_assignment(
+                &conn,
+                i,
+                &format!("beads-{i}"),
+                &format!("/tmp/wt-{i}"),
+                "integrated",
+                None,
+            )
+            .unwrap();
+            insert_integration_log(
+                &conn,
+                aid,
+                &format!("2026-02-15T1{i}:00:00Z"),
+                &format!("commit{i}"),
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        }
+
+        let entries = recent_integration_log(&conn, Some(3)).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Most recent first
+        assert_eq!(entries[0].bead_id, "beads-4");
+        assert_eq!(entries[1].bead_id, "beads-3");
+        assert_eq!(entries[2].bead_id, "beads-2");
+    }
+
+    // ── Find Failed Assignment tests ────────────────────────────────────
+
+    #[test]
+    fn find_failed_assignment_none() {
+        let (_dir, conn) = test_db();
+        let result = find_failed_assignment_by_bead(&conn, "beads-nope").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_failed_assignment_finds_integration_failed() {
+        let (_dir, conn) = test_db();
+
+        let aid = insert_worker_assignment(
+            &conn,
+            0,
+            "beads-fail",
+            "/tmp/wt-0",
+            "integration_failed",
+            None,
+        )
+        .unwrap();
+
+        let result = find_failed_assignment_by_bead(&conn, "beads-fail").unwrap();
+        assert!(result.is_some());
+        let wa = result.unwrap();
+        assert_eq!(wa.id, aid);
+        assert_eq!(wa.status, "integration_failed");
+    }
+
+    #[test]
+    fn find_failed_assignment_finds_failed_status() {
+        let (_dir, conn) = test_db();
+
+        insert_worker_assignment(&conn, 0, "beads-fail2", "/tmp/wt-0", "failed", None).unwrap();
+
+        let result = find_failed_assignment_by_bead(&conn, "beads-fail2").unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().status, "failed");
+    }
+
+    #[test]
+    fn find_failed_assignment_ignores_completed() {
+        let (_dir, conn) = test_db();
+
+        insert_worker_assignment(&conn, 0, "beads-ok", "/tmp/wt-0", "completed", None).unwrap();
+
+        let result = find_failed_assignment_by_bead(&conn, "beads-ok").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_failed_assignment_returns_most_recent() {
+        let (_dir, conn) = test_db();
+
+        let aid1 = insert_worker_assignment(
+            &conn,
+            0,
+            "beads-multi",
+            "/tmp/wt-0",
+            "integration_failed",
+            None,
+        )
+        .unwrap();
+        let aid2 = insert_worker_assignment(
+            &conn,
+            1,
+            "beads-multi",
+            "/tmp/wt-1",
+            "integration_failed",
+            None,
+        )
+        .unwrap();
+
+        let result = find_failed_assignment_by_bead(&conn, "beads-multi").unwrap();
+        assert!(result.is_some());
+        let wa = result.unwrap();
+        // Should return the most recent (highest id)
+        assert_eq!(wa.id, aid2);
+        assert_ne!(wa.id, aid1);
     }
 }

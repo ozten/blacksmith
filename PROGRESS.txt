@@ -1,31 +1,22 @@
-## Last Session: Implement session-to-bead attribution (dgh)
+## Last Session: Implement blacksmith integration log and retry commands (7ed)
 
 ### Completed
-- Added `bead_id: Option<String>` field to `IngestResult` struct
-- Implemented `attribute_session()` public function in `ingest.rs` with three attribution strategies:
-  1. **Multi-agent mode**: Checks `worker_assignments` table for existing attribution
-  2. **Git commit correlation**: Uses file timestamps (ctime/mtime) to bracket the session time window, runs `git log --after/--before` and extracts bead IDs from commit messages
-  3. **JSONL content fallback**: Scans session output for bead ID mentions in `bd update --status in_progress`, `bd-finish.sh`, `bd close`, and commit message format patterns
-- Implemented `store_attribution()` to write `session.bead_id` event and update `bead_metrics`
-- Implemented `update_bead_metrics()` to accumulate per-bead timing (sessions, wall_time_secs, total_turns, total_output_tokens)
-- Implemented `extract_bead_id_from_text()` with priority ordering: claim commands > close/finish commands > commit messages
-- Implemented `format_system_time()` for ISO 8601 timestamp formatting
-- Attribution is called automatically during `ingest_session_with_rules()` (best-effort, non-fatal)
-- Added 13 new tests (702 total passing):
-  - extract_bead_id_from_bd_update_claim, _equals
-  - extract_bead_id_from_bd_finish, _bd_close, _commit_message
-  - extract_bead_id_none_for_unrelated_text
-  - extract_bead_id_prefers_claim_over_close
-  - attribute_session_from_jsonl_content
-  - attribute_session_updates_bead_metrics
-  - attribute_session_accumulates_bead_metrics
-  - attribute_session_no_bead_id_found
-  - format_system_time_produces_iso8601, _recent
+- Added `Integration` subcommand to CLI with `Log` and `Retry` actions
+- `blacksmith integration log [--last N]`: Shows integration history table with assignment ID, bead ID, merge commit (truncated), merged_at timestamp, manifest entries applied, status, and reconciliation indicator
+- `blacksmith integration retry <bead-id>`: Finds the most recent failed/integration_failed assignment for the given bead, resets it to "completed" status, and re-runs the full integration pipeline (merge, manifest, compiler check, integration agent, fast-forward)
+- Added `IntegrationLogView` struct in db.rs for the joined query
+- Added `recent_integration_log()` DB function: queries integration_log joined with worker_assignments, supports optional LIMIT, returns entries in DESC order
+- Added `find_failed_assignment_by_bead()` DB function: finds the most recent failed/integration_failed worker assignment for a given bead_id
+- Added 12 new tests (714 total passing):
+  - DB: recent_integration_log_empty, _returns_entries, _with_limit
+  - DB: find_failed_assignment_none, _finds_integration_failed, _finds_failed_status, _ignores_completed, _returns_most_recent
+  - main: test_integration_log_empty, _with_entries, _with_last, _retry_no_failed_assignment
 
 ### Key Files Modified
-- `src/ingest.rs` — All attribution logic and tests
+- `src/main.rs` — CLI subcommand definition and handler functions
+- `src/db.rs` — New query functions and structs for integration log views
 
 ### Suggested Next Tasks
-- **7ed**: Implement blacksmith integration log and retry commands (P2)
 - **dfe**: Implement git revert rollback with entanglement tracking (P2)
-- **ml7**: Implement serial and parallel time estimation from bead_metrics (P2, unblocked by this)
+- **ml7**: Implement serial and parallel time estimation from bead_metrics (P2)
+- **ec1**: Implement codex agent adapter (P3)

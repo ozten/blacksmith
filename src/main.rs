@@ -119,6 +119,11 @@ enum Commands {
         #[command(subcommand)]
         action: WorkersAction,
     },
+    /// View integration history and retry failed integrations
+    Integration {
+        #[command(subcommand)]
+        action: IntegrationAction,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -181,6 +186,21 @@ enum WorkersAction {
     Kill {
         /// Worker ID to kill (from the worker_id column)
         worker_id: i64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum IntegrationAction {
+    /// Show integration history
+    Log {
+        /// Number of recent integrations to show (default: all)
+        #[arg(long)]
+        last: Option<i64>,
+    },
+    /// Retry a failed integration by bead ID
+    Retry {
+        /// Bead ID to retry (e.g. beads-abc)
+        bead_id: String,
     },
 }
 
@@ -275,6 +295,123 @@ impl Cli {
             retries: self.retries,
         }
     }
+}
+
+/// Handle `blacksmith integration log [--last N]` — show integration history.
+fn handle_integration_log(
+    db_path: &std::path::Path,
+    last: Option<i64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = db::open_or_create(db_path)?;
+    let entries = db::recent_integration_log(&conn, last)?;
+
+    if entries.is_empty() {
+        println!("No integration history.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<8} {:<24} {:<12} {:<22} {:<24} STATUS",
+        "ASSIGN", "BEAD", "COMMIT", "MERGED AT", "MANIFEST"
+    );
+    println!("{}", "-".repeat(100));
+
+    for entry in &entries {
+        let commit_short = if entry.merge_commit.len() >= 7 {
+            &entry.merge_commit[..7]
+        } else {
+            &entry.merge_commit
+        };
+
+        let manifest = entry.manifest_entries_applied.as_deref().unwrap_or("-");
+
+        let reconciliation = if entry.reconciliation_run {
+            " [reconciled]"
+        } else {
+            ""
+        };
+
+        println!(
+            "{:<8} {:<24} {:<12} {:<22} {:<24} {}{}",
+            entry.assignment_id,
+            entry.bead_id,
+            commit_short,
+            entry.merged_at,
+            manifest,
+            entry.status,
+            reconciliation,
+        );
+    }
+
+    println!("\n{} integration(s).", entries.len());
+    Ok(())
+}
+
+/// Handle `blacksmith integration retry <bead-id>` — retry a failed integration.
+fn handle_integration_retry(
+    db_path: &std::path::Path,
+    config: &HarnessConfig,
+    bead_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = db::open_or_create(db_path)?;
+
+    let assignment = db::find_failed_assignment_by_bead(&conn, bead_id)?;
+    let assignment = match assignment {
+        Some(a) => a,
+        None => {
+            eprintln!("No failed integration found for bead '{bead_id}'.");
+            eprintln!("Use `blacksmith integration log` to see integration history.");
+            std::process::exit(1);
+        }
+    };
+
+    let worktree_path = std::path::PathBuf::from(&assignment.worktree_path);
+    if !worktree_path.exists() {
+        eprintln!("Worktree no longer exists: {}", worktree_path.display());
+        eprintln!("The worktree may have been cleaned up. A fresh integration is needed.");
+        std::process::exit(1);
+    }
+
+    // Reset the assignment status to 'completed' so it's eligible for integration
+    db::update_worker_assignment_status(&conn, assignment.id, "completed", None)?;
+
+    let repo_dir = std::env::current_dir()?;
+    let base_branch = config.workers.base_branch.clone();
+
+    let integration_agent = config.agent.resolved_integration();
+    let agent_config = if integration_agent.command.is_empty() {
+        None
+    } else {
+        Some(integration_agent)
+    };
+
+    let queue = integrator::IntegrationQueue::new(repo_dir, base_branch);
+    let mut cb = integrator::CircuitBreaker::new();
+
+    let result = queue.integrate(
+        assignment.worker_id as u32,
+        assignment.id,
+        bead_id,
+        &worktree_path,
+        &conn,
+        agent_config.as_ref(),
+        &mut cb,
+    );
+
+    if result.success {
+        println!(
+            "Integration succeeded for '{bead_id}' (commit: {}).",
+            result.merge_commit.as_deref().unwrap_or("unknown")
+        );
+    } else {
+        eprintln!(
+            "Integration retry failed for '{bead_id}': {}",
+            result.failure_reason.as_deref().unwrap_or("unknown error")
+        );
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
 
 /// Handle `blacksmith workers status` — show current worker pool state.
@@ -561,6 +698,25 @@ async fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+        return;
+    }
+
+    if let Some(Commands::Integration { action }) = &cli.command {
+        let config_for_integration = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = data_dir::DataDir::new(&config_for_integration.storage.data_dir);
+        let db_path = dd.db();
+
+        let result = match action {
+            IntegrationAction::Log { last } => handle_integration_log(&db_path, *last),
+            IntegrationAction::Retry { bead_id } => {
+                handle_integration_retry(&db_path, &config_for_integration, bead_id)
+            }
+        };
+
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
         }
         return;
     }
@@ -941,5 +1097,90 @@ mod tests {
             .unwrap();
         assert_eq!(wa.status, "failed");
         assert_eq!(wa.failure_notes, Some("killed by user".to_string()));
+    }
+
+    #[test]
+    fn test_integration_log_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+        drop(conn);
+
+        let result = handle_integration_log(&db_path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_integration_log_with_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        let a1 =
+            db::insert_worker_assignment(&conn, 0, "beads-abc", "/tmp/wt-0", "integrated", None)
+                .unwrap();
+        db::insert_integration_log(
+            &conn,
+            a1,
+            "2026-02-15T12:00:00Z",
+            "abc123def456",
+            Some("3 entries applied"),
+            None,
+            false,
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = handle_integration_log(&db_path, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_integration_log_with_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+
+        for i in 0..5 {
+            let aid = db::insert_worker_assignment(
+                &conn,
+                i,
+                &format!("beads-{i}"),
+                &format!("/tmp/wt-{i}"),
+                "integrated",
+                None,
+            )
+            .unwrap();
+            db::insert_integration_log(
+                &conn,
+                aid,
+                &format!("2026-02-15T1{i}:00:00Z"),
+                &format!("commit{i}abc"),
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let result = handle_integration_log(&db_path, Some(2));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_integration_retry_no_failed_assignment() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+        // Insert a completed (not failed) assignment
+        db::insert_worker_assignment(&conn, 0, "beads-ok", "/tmp/wt-0", "completed", None).unwrap();
+        drop(conn);
+
+        // handle_integration_retry calls process::exit(1) when no failed assignment found,
+        // so we test the DB function directly
+        let conn2 = db::open_or_create(&db_path).unwrap();
+        let result = db::find_failed_assignment_by_bead(&conn2, "beads-ok").unwrap();
+        assert!(result.is_none());
     }
 }
