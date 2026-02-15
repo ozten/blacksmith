@@ -47,7 +47,7 @@ pub enum ExitReason {
 /// Run the main iteration loop.
 ///
 /// Returns a summary of what happened, or an error if setup fails.
-pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary {
+pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -> RunSummary {
     let max_iterations = config.session.max_iterations;
 
     // Load or initialize the global iteration counter
@@ -507,6 +507,13 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         "loop finished"
     );
 
+    // In quiet mode, print a one-line summary to stdout (bypasses tracing filter)
+    if quiet {
+        println!(
+            "blacksmith: {productive}/{max_iterations} productive, global={global_iteration}, exit={exit_reason:?}"
+        );
+    }
+
     // Clean up status file on exit
     status.remove();
 
@@ -815,7 +822,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
         assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
@@ -841,7 +848,7 @@ mod tests {
         std::fs::write(&config.shutdown.stop_file, "").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 0);
         assert_eq!(summary.exit_reason, ExitReason::StopFile);
@@ -857,7 +864,7 @@ mod tests {
         // Request shutdown before starting
         signals.request_shutdown();
 
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 0);
         assert_eq!(summary.exit_reason, ExitReason::Signal);
@@ -870,7 +877,7 @@ mod tests {
         // Don't create prompt file
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 0);
         assert_eq!(summary.exit_reason, ExitReason::PromptError);
@@ -888,7 +895,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         // Should have exhausted retries (2 retries) then skipped, counting as 1 productive
         assert_eq!(summary.productive_iterations, 1);
@@ -910,7 +917,7 @@ mod tests {
         std::fs::write(&config.session.counter_file, "100").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
         assert_eq!(summary.global_iteration, 103);
@@ -931,7 +938,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
@@ -948,7 +955,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
 
@@ -984,7 +991,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
 
@@ -1010,7 +1017,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert!(marker.exists(), "pre-session hook should have run");
@@ -1032,7 +1039,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         // All iterations skipped due to hook failure; exits after MAX_CONSECUTIVE_ERRORS (5)
         assert_eq!(summary.productive_iterations, 0);
@@ -1055,7 +1062,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert!(marker.exists(), "post-session hook should have run");
@@ -1077,7 +1084,7 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         // Should complete all iterations despite post-hook failures
         assert_eq!(summary.productive_iterations, 2);
@@ -1108,7 +1115,7 @@ printf '{"type":"result","subtype":"error","is_error":true,"result":"rate_limit:
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         // All sessions are rate-limited, should exit after max_consecutive_rate_limits
         assert_eq!(summary.productive_iterations, 0);
@@ -1154,7 +1161,7 @@ fi
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         // First session: rate-limited (not productive)
         // Second session: normal (productive)
@@ -1191,7 +1198,7 @@ printf '{"type":"result","subtype":"error","is_error":true,"result":"hit your li
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.exit_reason, ExitReason::RateLimited);
 
@@ -1229,7 +1236,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         // Session should be counted as productive (not rate-limited)
         assert_eq!(summary.productive_iterations, 1);
@@ -1250,7 +1257,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         // Post hook should only run once (on Skip), not during retries
@@ -1288,7 +1295,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
 
@@ -1315,7 +1322,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
 
@@ -1354,7 +1361,7 @@ echo "Changes committed via git commit -m fix"
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert!(marker.exists(), "post hook should have run");
@@ -1386,7 +1393,7 @@ printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
 
@@ -1432,10 +1439,26 @@ printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,
         std::fs::create_dir_all(dir.path().join("blacksmith.db")).unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals).await;
+        let summary = run(&config, &signals, false).await;
 
         // Should still complete despite DB failure
         assert_eq!(summary.productive_iterations, 3);
+        assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
+    }
+
+    #[tokio::test]
+    async fn test_quiet_mode_completes_successfully() {
+        let dir = tempdir().unwrap();
+        let mut config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
+        config.session.max_iterations = 1;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals, true).await;
+
+        // Quiet mode should still complete normally
+        assert_eq!(summary.productive_iterations, 1);
         assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
     }
 }

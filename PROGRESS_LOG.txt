@@ -706,3 +706,26 @@
 - Implement --quiet mode for minimal output (r43) — P3, ready
 - Implement config validation with helpful error messages (edb) — P3, ready
 - Implement metrics migrate command for V1 data import (j1w) — P3, ready
+
+--- 2026-02-15 14:38:48 | simple-agent-harness-r43 ---
+## Last Session: Implement --quiet mode (simple-agent-harness-r43)
+
+### Completed
+- Changed `--quiet` flag to filter at `error` level (was `warn`), matching PRD spec: "--quiet = error only"
+- Added final summary line in quiet mode via `println!` that bypasses tracing filters
+  - Format: `blacksmith: {productive}/{max} productive, global={global}, exit={reason}`
+- Passed `quiet` bool through `runner::run()` signature (3rd parameter)
+- Updated all 22 test call sites to pass `quiet: false`
+- Added `test_quiet_mode_completes_successfully` test
+- All 341 tests pass, clippy clean (pre-existing dead_code warnings only), fmt applied
+
+### Current State
+- `--quiet` suppresses all info/warn/debug tracing, only shows errors + one final summary line
+- `--verbose` shows debug-level messages (unchanged)
+- Default shows info+ messages (unchanged)
+- Pre-existing dead_code warnings remain for functions consumed by future features
+
+### Suggested Next Tasks
+- Implement config validation with helpful error messages (edb) — P3, ready
+- Implement metrics migrate command for V1 data import (j1w) — P3, ready
+- Implement metrics rebuild command (9cm) — P3, ready

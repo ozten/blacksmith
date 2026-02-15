@@ -205,9 +205,9 @@ impl Cli {
 async fn main() {
     let cli = Cli::parse();
 
-    // Log level: --quiet = warn+, --verbose = debug+, default = info+
+    // Log level: --quiet = error only, --verbose = debug+, default = info+
     let level = if cli.quiet {
-        "warn"
+        "error"
     } else if cli.verbose {
         "debug"
     } else {
@@ -494,7 +494,7 @@ async fn main() {
     );
 
     // Run the main loop
-    let summary = runner::run(&config, &signals).await;
+    let summary = runner::run(&config, &signals, cli.quiet).await;
 
     tracing::info!(
         productive = summary.productive_iterations,
