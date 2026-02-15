@@ -4,6 +4,7 @@
 /// session spawning, watchdog monitoring, retry logic, and signal handling.
 use crate::commit;
 use crate::config::HarnessConfig;
+use crate::data_dir::DataDir;
 use crate::db;
 use crate::hooks::{HookEnv, HookRunner};
 use crate::ingest;
@@ -47,11 +48,17 @@ pub enum ExitReason {
 /// Run the main iteration loop.
 ///
 /// Returns a summary of what happened, or an error if setup fails.
-pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -> RunSummary {
+pub async fn run(
+    config: &HarnessConfig,
+    data_dir: &DataDir,
+    signals: &SignalHandler,
+    quiet: bool,
+) -> RunSummary {
     let max_iterations = config.session.max_iterations;
 
     // Load or initialize the global iteration counter
-    let mut global_iteration = load_counter(&config.session.counter_file);
+    let counter_path = data_dir.counter();
+    let mut global_iteration = load_counter(&counter_path);
     let mut productive = 0u32;
     let mut exit_reason = ExitReason::MaxIterations;
 
@@ -64,7 +71,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
     let mut consecutive_rate_limits = 0u32;
 
     // Status file: write state transitions atomically
-    let status_path = config.session.output_dir.join("blacksmith.status");
+    let status_path = data_dir.status();
     let mut status = StatusTracker::new(status_path, max_iterations, global_iteration);
     status.update(HarnessState::Starting);
 
@@ -78,7 +85,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
 
     // Metrics DB: open blacksmith.db for JSONL ingestion (non-fatal if it fails)
     let metrics_db = {
-        let db_path = config.session.output_dir.join("blacksmith.db");
+        let db_path = data_dir.db();
         match db::open_or_create(&db_path) {
             Ok(conn) => {
                 tracing::debug!(path = %db_path.display(), "metrics database opened");
@@ -144,22 +151,19 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
         }
 
         // 2. Assemble prompt (read file + run prepend_commands + brief injection)
-        let prompt = match prompt::assemble(
-            &config.prompt,
-            &config.session.prompt_file,
-            &config.session.output_dir,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to assemble prompt");
-                exit_reason = ExitReason::PromptError;
-                status.update(HarnessState::ShuttingDown);
-                break;
-            }
-        };
+        let prompt =
+            match prompt::assemble(&config.prompt, &config.session.prompt_file, &data_dir.db()) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to assemble prompt");
+                    exit_reason = ExitReason::PromptError;
+                    status.update(HarnessState::ShuttingDown);
+                    break;
+                }
+            };
 
         // 3. Compute output file path for this global iteration
-        let output_path = session::output_file_path(&config.session, global_iteration);
+        let output_path = data_dir.session_file(global_iteration as u32);
 
         // Ensure output directory exists
         if let Some(parent) = output_path.parent() {
@@ -195,7 +199,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
                 tracing::error!(error = %e, "pre-session hook failed, skipping iteration");
                 consecutive_errors += 1;
                 global_iteration += 1;
-                save_counter(&config.session.counter_file, global_iteration);
+                save_counter(&counter_path, global_iteration);
                 status.set_global_iteration(global_iteration);
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                     tracing::error!(
@@ -231,7 +235,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
                 tracing::error!(error = %e, "session failed");
                 consecutive_errors += 1;
                 global_iteration += 1;
-                save_counter(&config.session.counter_file, global_iteration);
+                save_counter(&counter_path, global_iteration);
                 status.set_global_iteration(global_iteration);
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                     tracing::error!(
@@ -337,7 +341,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
                     global_iteration += 1;
                     retry_policy.reset();
                     retries_this_session = 0;
-                    save_counter(&config.session.counter_file, global_iteration);
+                    save_counter(&counter_path, global_iteration);
 
                     status.set_global_iteration(global_iteration);
                     status.set_consecutive_rate_limits(consecutive_rate_limits);
@@ -382,7 +386,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
                 global_iteration += 1;
                 retry_policy.reset();
                 retries_this_session = 0;
-                save_counter(&config.session.counter_file, global_iteration);
+                save_counter(&counter_path, global_iteration);
 
                 status.set_iteration(productive);
                 status.set_global_iteration(global_iteration);
@@ -406,7 +410,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
                 );
                 retries_this_session += 1;
                 global_iteration += 1;
-                save_counter(&config.session.counter_file, global_iteration);
+                save_counter(&counter_path, global_iteration);
                 status.set_global_iteration(global_iteration);
                 status.update(HarnessState::Retrying);
 
@@ -472,7 +476,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler, quiet: bool) -
                 global_iteration += 1;
                 retry_policy.reset();
                 retries_this_session = 0;
-                save_counter(&config.session.counter_file, global_iteration);
+                save_counter(&counter_path, global_iteration);
 
                 status.set_iteration(productive);
                 status.set_global_iteration(global_iteration);
@@ -763,6 +767,13 @@ mod tests {
         }
     }
 
+    /// Helper to create a DataDir for tests, using a subdirectory of the temp dir.
+    fn test_data_dir(dir: &std::path::Path) -> DataDir {
+        let dd = DataDir::new(dir.join(".blacksmith"));
+        dd.init().unwrap();
+        dd
+    }
+
     /// Helper to create a SignalHandler for tests.
     fn make_signals() -> SignalHandler {
         SignalHandler::install()
@@ -823,18 +834,19 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
         assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
         assert_eq!(summary.global_iteration, 3);
 
         // Verify counter file was persisted
-        assert_eq!(load_counter(&config.session.counter_file), 3);
+        assert_eq!(load_counter(&data_dir.counter()), 3);
 
         // Verify output files were created
         for i in 0..3 {
-            let path = dir.path().join(format!("test-iter-{}.jsonl", i));
+            let path = dir.path().join(format!(".blacksmith/sessions/{}.jsonl", i));
             assert!(path.exists(), "output file {} should exist", i);
         }
     }
@@ -849,7 +861,8 @@ mod tests {
         std::fs::write(&config.shutdown.stop_file, "").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 0);
         assert_eq!(summary.exit_reason, ExitReason::StopFile);
@@ -865,7 +878,8 @@ mod tests {
         // Request shutdown before starting
         signals.request_shutdown();
 
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 0);
         assert_eq!(summary.exit_reason, ExitReason::Signal);
@@ -878,7 +892,8 @@ mod tests {
         // Don't create prompt file
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 0);
         assert_eq!(summary.exit_reason, ExitReason::PromptError);
@@ -896,7 +911,8 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         // Should have exhausted retries (2 retries) then skipped, counting as 1 productive
         assert_eq!(summary.productive_iterations, 1);
@@ -914,18 +930,20 @@ mod tests {
         let config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
-        // Pre-set counter to 100
-        std::fs::write(&config.session.counter_file, "100").unwrap();
+        let data_dir = test_data_dir(dir.path());
+
+        // Pre-set counter to 100 (in the data dir)
+        std::fs::write(data_dir.counter(), "100").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
         assert_eq!(summary.global_iteration, 103);
 
         // Verify output files use global counter
         for i in 100..103 {
-            let path = dir.path().join(format!("test-iter-{}.jsonl", i));
+            let path = dir.path().join(format!(".blacksmith/sessions/{}.jsonl", i));
             assert!(path.exists(), "output file {} should exist", i);
         }
     }
@@ -939,7 +957,8 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
@@ -956,7 +975,8 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
 
@@ -992,7 +1012,8 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 3);
 
@@ -1018,7 +1039,8 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert!(marker.exists(), "pre-session hook should have run");
@@ -1040,7 +1062,8 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         // All iterations skipped due to hook failure; exits after MAX_CONSECUTIVE_ERRORS (5)
         assert_eq!(summary.productive_iterations, 0);
@@ -1063,13 +1086,14 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert!(marker.exists(), "post-session hook should have run");
         let contents = std::fs::read_to_string(&marker).unwrap();
         let parts: Vec<&str> = contents.trim().split(':').collect();
-        assert!(parts[0].contains("test-iter-0.jsonl")); // HARNESS_OUTPUT_FILE
+        assert!(parts[0].contains("sessions/0.jsonl")); // HARNESS_OUTPUT_FILE
         assert_eq!(parts[1], "0"); // HARNESS_EXIT_CODE
         assert!(parts[2].parse::<u64>().unwrap() > 0); // HARNESS_OUTPUT_BYTES
     }
@@ -1085,7 +1109,8 @@ mod tests {
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         // Should complete all iterations despite post-hook failures
         assert_eq!(summary.productive_iterations, 2);
@@ -1116,7 +1141,8 @@ printf '{"type":"result","subtype":"error","is_error":true,"result":"rate_limit:
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         // All sessions are rate-limited, should exit after max_consecutive_rate_limits
         assert_eq!(summary.productive_iterations, 0);
@@ -1162,7 +1188,8 @@ fi
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         // First session: rate-limited (not productive)
         // Second session: normal (productive)
@@ -1199,7 +1226,8 @@ printf '{"type":"result","subtype":"error","is_error":true,"result":"hit your li
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.exit_reason, ExitReason::RateLimited);
 
@@ -1237,7 +1265,8 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         // Session should be counted as productive (not rate-limited)
         assert_eq!(summary.productive_iterations, 1);
@@ -1258,7 +1287,8 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         // Post hook should only run once (on Skip), not during retries
@@ -1296,7 +1326,8 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
 
@@ -1323,7 +1354,8 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
 
@@ -1362,7 +1394,8 @@ echo "Changes committed via git commit -m fix"
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
         assert!(marker.exists(), "post hook should have run");
@@ -1394,12 +1427,13 @@ printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         assert_eq!(summary.productive_iterations, 1);
 
         // Verify blacksmith.db was created and has ingested data
-        let db_path = dir.path().join("blacksmith.db");
+        let db_path = dir.path().join(".blacksmith/blacksmith.db");
         assert!(db_path.exists(), "blacksmith.db should be created");
 
         let conn = crate::db::open_or_create(&db_path).unwrap();
@@ -1437,10 +1471,13 @@ printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         // Make blacksmith.db a directory to cause open_or_create to fail
-        std::fs::create_dir_all(dir.path().join("blacksmith.db")).unwrap();
+        // test_data_dir creates .blacksmith/, so we create .blacksmith/blacksmith.db as a dir
+        let data_dir = test_data_dir(dir.path());
+        std::fs::remove_dir_all(dir.path().join(".blacksmith/blacksmith.db")).ok();
+        std::fs::create_dir_all(dir.path().join(".blacksmith/blacksmith.db")).unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, false).await;
+        let summary = run(&config, &data_dir, &signals, false).await;
 
         // Should still complete despite DB failure
         assert_eq!(summary.productive_iterations, 3);
@@ -1456,7 +1493,8 @@ printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 
         let signals = make_signals();
-        let summary = run(&config, &signals, true).await;
+        let data_dir = test_data_dir(dir.path());
+        let summary = run(&config, &data_dir, &signals, true).await;
 
         // Quiet mode should still complete normally
         assert_eq!(summary.productive_iterations, 1);

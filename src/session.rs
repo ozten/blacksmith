@@ -67,6 +67,10 @@ impl std::error::Error for SessionError {
 }
 
 /// Build the output file path: {output_dir}/{output_prefix}-{global_iteration}.jsonl
+///
+/// Deprecated: use `DataDir::session_file()` instead. Retained for backwards compatibility
+/// with existing session tests.
+#[allow(dead_code)]
 pub fn output_file_path(session_config: &SessionConfig, global_iteration: u64) -> PathBuf {
     let filename = format!(
         "{}-{}.jsonl",

@@ -1,22 +1,36 @@
-## Last Session: Add storage config and .blacksmith/ directory initialization (ib1)
+## Last Session: Migrate file path construction to use storage.data_dir (1u6)
 
 ### Completed
-- Added `StorageConfig` struct with `data_dir` field (default `.blacksmith/`) to `config.rs`
-- Created `src/data_dir.rs` with `DataDir` struct managing directory layout:
-  - Accessors: root, db, status, counter, sessions_dir, worktrees_dir, session_file
-  - `init()` creates full directory structure (root, sessions/, worktrees/)
-  - `ensure_initialized()` creates dirs + appends to .gitignore if present
-- Added `blacksmith init` CLI subcommand
-- Auto-init on every `blacksmith run` (before dry_run/status checks)
-- Added `storage.data_dir` to dry-run output
-- 9 tests in data_dir.rs, 2 new tests in config.rs (402 total, all passing)
+- Migrated runner.rs to accept DataDir parameter; all paths now use DataDir accessors:
+  - Counter: DataDir::counter() replaces config.session.counter_file
+  - Status: DataDir::status() replaces config.session.output_dir.join("blacksmith.status")
+  - DB: DataDir::db() replaces config.session.output_dir.join("blacksmith.db")
+  - Session output: DataDir::session_file(N) replaces session::output_file_path()
+- Updated prompt.rs to accept db_path directly instead of computing from output_dir
+- Updated main.rs: all subcommands (brief, improve, metrics) use DataDir::db() for DB path
+- Updated main.rs: --status uses DataDir::status()
+- Updated main.rs: dry-run output shows DataDir paths instead of deprecated session.output_dir
+- Added HarnessConfig::warn_deprecated_paths() — emits tracing::warn for:
+  - session.output_prefix (deprecated)
+  - session.counter_file (deprecated)
+  - session.output_dir (deprecated)
+- Removed output_dir CLI override from apply_cli_overrides (no longer applies)
+- Removed output_dir validation from config.validate()
+- Marked session::output_file_path() as deprecated with #[allow(dead_code)]
+- Updated all runner.rs tests (24 tests) to use DataDir
+- Updated all prompt.rs tests to pass db_path directly
+- Updated config.rs tests for removed output_dir override and validation
+- All 401 tests pass, clippy clean, fmt clean
 
 ### Current State
-- `storage.data_dir` config field is loaded from TOML `[storage]` section
-- `DataDir` struct provides path accessors that downstream beads will use
-- Downstream beads (1u6, x1a, jkn, 1jv) are now unblocked
+- All file path construction now goes through DataDir struct
+- Session files: .blacksmith/sessions/{N}.jsonl
+- Counter: .blacksmith/counter
+- Status: .blacksmith/status
+- DB: .blacksmith/blacksmith.db
+- Legacy config keys (output_dir, output_prefix, counter_file) still exist but are ignored with deprecation warnings
 
 ### Suggested Next Tasks
-- **1u6**: Migrate file path construction to use storage.data_dir (session output, counter, db, status paths)
-- **wi2**: Define AgentAdapter trait and extract Claude adapter (independent, high unblock value)
-- **zl7**: Add coordinator SQLite tables (independent)
+- **wi2**: Define AgentAdapter trait and extract Claude adapter (high unblock value)
+- **zl7**: Add coordinator SQLite tables for multi-agent state
+- **mjx**: Implement affected set parsing and glob overlap detection

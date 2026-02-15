@@ -277,13 +277,9 @@ async fn main() {
     }
 
     if let Some(Commands::Brief) = &cli.command {
-        let output_dir = cli
-            .output_dir
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let db_path = output_dir.join("blacksmith.db");
-
         let config_for_brief = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = data_dir::DataDir::new(&config_for_brief.storage.data_dir);
+        let db_path = dd.db();
         let targets = &config_for_brief.metrics.targets;
         let targets_opt = if targets.rules.is_empty() {
             None
@@ -299,13 +295,9 @@ async fn main() {
     }
 
     if let Some(Commands::Improve { action }) = &cli.command {
-        // Resolve db path: output_dir/blacksmith.db
-        // Use output_dir from CLI or default "."
-        let output_dir = cli
-            .output_dir
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let db_path = output_dir.join("blacksmith.db");
+        let config_for_improve = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = data_dir::DataDir::new(&config_for_improve.storage.data_dir);
+        let db_path = dd.db();
 
         let result = match action {
             ImproveAction::Add {
@@ -353,13 +345,9 @@ async fn main() {
     }
 
     if let Some(Commands::Metrics { action }) = &cli.command {
-        let output_dir = cli
-            .output_dir
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        let db_path = output_dir.join("blacksmith.db");
-
         let config_for_metrics = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = data_dir::DataDir::new(&config_for_metrics.storage.data_dir);
+        let db_path = dd.db();
         let result = match action {
             MetricsAction::Log { file } => metrics_cmd::handle_log(&db_path, file),
             MetricsAction::Status { last } => metrics_cmd::handle_status(&db_path, *last),
@@ -396,6 +384,9 @@ async fn main() {
 
     tracing::debug!(?config, "resolved configuration");
 
+    // Warn about deprecated config keys superseded by storage.data_dir
+    config.warn_deprecated_paths();
+
     // Validate config on load so errors surface immediately
     let validation_errors = config.validate();
     if !validation_errors.is_empty() {
@@ -426,15 +417,14 @@ async fn main() {
             "  session.prompt_file = {}",
             config.session.prompt_file.display()
         );
+        println!("  storage.data_dir = {}", config.storage.data_dir.display());
+        println!("  data_dir.db = {}", data_dir.db().display());
         println!(
-            "  session.output_dir = {}",
-            config.session.output_dir.display()
+            "  data_dir.sessions = {}",
+            data_dir.sessions_dir().display()
         );
-        println!("  session.output_prefix = {}", config.session.output_prefix);
-        println!(
-            "  session.counter_file = {}",
-            config.session.counter_file.display()
-        );
+        println!("  data_dir.counter = {}", data_dir.counter().display());
+        println!("  data_dir.status = {}", data_dir.status().display());
         println!("  agent.command = {}", config.agent.command);
         println!("  agent.args = {:?}", config.agent.args);
         println!(
@@ -527,14 +517,13 @@ async fn main() {
             "  metrics.targets.streak_threshold = {}",
             config.metrics.targets.streak_threshold
         );
-        println!("  storage.data_dir = {}", config.storage.data_dir.display());
         println!();
         println!("Dry run mode — config validated, not running.");
         return;
     }
 
     if cli.status {
-        let status_path = config.session.output_dir.join("blacksmith.status");
+        let status_path = data_dir.status();
         match status::display_status(&status_path) {
             Ok(true) => {}
             Ok(false) => {
@@ -558,7 +547,7 @@ async fn main() {
     );
 
     // Run the main loop
-    let summary = runner::run(&config, &signals, cli.quiet).await;
+    let summary = runner::run(&config, &data_dir, &signals, cli.quiet).await;
 
     tracing::info!(
         productive = summary.productive_iterations,

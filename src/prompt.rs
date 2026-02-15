@@ -63,7 +63,7 @@ impl std::error::Error for PromptError {
 ///
 /// Assembly sequence:
 /// 1. Run prepend_commands and collect non-empty outputs
-/// 2. Generate brief from blacksmith.db in output_dir (silently skipped if no DB)
+/// 2. Generate brief from the metrics database (silently skipped if no DB)
 /// 3. Read prompt file
 /// 4. Join all non-empty parts with `\n---\n` separators
 ///
@@ -72,7 +72,7 @@ impl std::error::Error for PromptError {
 pub fn assemble(
     prompt_config: &PromptConfig,
     fallback_prompt_file: &Path,
-    output_dir: &Path,
+    db_path: &Path,
 ) -> Result<String, PromptError> {
     // Determine prompt file path
     let prompt_path = prompt_config
@@ -103,8 +103,7 @@ pub fn assemble(
     }
 
     // 2. Generate brief from blacksmith.db (silently skipped if no DB or no improvements)
-    let db_path = output_dir.join("blacksmith.db");
-    match brief::generate_brief(&db_path, None) {
+    match brief::generate_brief(db_path, None) {
         Ok(text) if !text.is_empty() => {
             tracing::debug!(bytes = text.len(), "brief injected into prompt");
             prefix_parts.push(text);
@@ -164,7 +163,7 @@ mod tests {
             prepend_commands: vec![],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "Hello, world!");
     }
 
@@ -211,7 +210,7 @@ mod tests {
             prepend_commands: vec!["echo 'prepended text'".to_string()],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "prepended text\n---\nmain prompt");
     }
 
@@ -226,7 +225,7 @@ mod tests {
             prepend_commands: vec!["echo 'first'".to_string(), "echo 'second'".to_string()],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "first\n---\nsecond\n---\nmain prompt");
     }
 
@@ -245,7 +244,7 @@ mod tests {
             ],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "visible\n---\nalso visible\n---\nmain prompt");
     }
 
@@ -260,7 +259,7 @@ mod tests {
             prepend_commands: vec!["true".to_string(), "true".to_string()],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "main prompt");
     }
 
@@ -275,7 +274,7 @@ mod tests {
             prepend_commands: vec!["echo 'partial'; exit 1".to_string()],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "partial\n---\nmain prompt");
     }
 
@@ -287,7 +286,11 @@ mod tests {
             prepend_commands: vec![],
         };
 
-        let result = assemble(&config, Path::new("/nonexistent/prompt.md"), dir.path());
+        let result = assemble(
+            &config,
+            Path::new("/nonexistent/prompt.md"),
+            &dir.path().join("blacksmith.db"),
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, PromptError::ReadFile { .. }));
@@ -305,7 +308,7 @@ mod tests {
             prepend_commands: vec!["echo ''".to_string()],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "main prompt");
     }
 
@@ -320,7 +323,7 @@ mod tests {
             prepend_commands: vec!["printf 'line1\\nline2\\nline3'".to_string()],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "line1\nline2\nline3\n---\nmain prompt");
     }
 
@@ -348,7 +351,7 @@ mod tests {
             prepend_commands: vec![],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "main prompt");
     }
 
@@ -366,7 +369,7 @@ mod tests {
             prepend_commands: vec![],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         assert_eq!(result, "main prompt");
     }
 
@@ -388,7 +391,7 @@ mod tests {
             prepend_commands: vec!["echo 'prepend output'".to_string()],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         // Sequence: prepend output, then brief, then prompt
         assert!(result.starts_with("prepend output\n---\n## OPEN IMPROVEMENTS"));
         assert!(result.contains("R1 [workflow] Batch file reads"));
@@ -412,7 +415,7 @@ mod tests {
             prepend_commands: vec![],
         };
 
-        let result = assemble(&config, &prompt_path, dir.path()).unwrap();
+        let result = assemble(&config, &prompt_path, &dir.path().join("blacksmith.db")).unwrap();
         // Brief should be prepended to prompt
         assert!(result.starts_with("## OPEN IMPROVEMENTS (1 of 1)"));
         assert!(result.contains("R1 [cost] Reduce API calls"));

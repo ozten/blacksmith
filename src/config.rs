@@ -66,9 +66,7 @@ impl HarnessConfig {
         if let Some(ref p) = overrides.prompt {
             self.session.prompt_file = p.clone();
         }
-        if let Some(ref d) = overrides.output_dir {
-            self.session.output_dir = d.clone();
-        }
+        // output_dir override removed — session output now uses storage.data_dir
         if let Some(t) = overrides.timeout {
             self.watchdog.stale_timeout_mins = t;
         }
@@ -355,6 +353,30 @@ impl ExtractionRule {
 }
 
 impl HarnessConfig {
+    /// Emit deprecation warnings for config keys that have been superseded by storage.data_dir.
+    /// Call this after loading config to inform users about migration.
+    pub fn warn_deprecated_paths(&self) {
+        let defaults = SessionConfig::default();
+        if self.session.output_prefix != defaults.output_prefix {
+            tracing::warn!(
+                "session.output_prefix is deprecated; session output now goes to <storage.data_dir>/sessions/. Ignoring configured value '{}'",
+                self.session.output_prefix
+            );
+        }
+        if self.session.counter_file != defaults.counter_file {
+            tracing::warn!(
+                "session.counter_file is deprecated; counter now lives at <storage.data_dir>/counter. Ignoring configured value '{}'",
+                self.session.counter_file.display()
+            );
+        }
+        if self.session.output_dir != defaults.output_dir {
+            tracing::warn!(
+                "session.output_dir is deprecated; all artifacts now live under <storage.data_dir>/. Ignoring configured value '{}'",
+                self.session.output_dir.display()
+            );
+        }
+    }
+
     /// Validate the resolved configuration, returning a list of actionable error messages.
     /// Call this after loading config and applying CLI overrides so errors surface immediately.
     pub fn validate(&self) -> Vec<String> {
@@ -368,16 +390,7 @@ impl HarnessConfig {
             ));
         }
 
-        // output_dir must exist or be creatable
-        if !self.session.output_dir.exists() {
-            if let Err(e) = std::fs::create_dir_all(&self.session.output_dir) {
-                errors.push(format!(
-                    "session.output_dir: directory '{}' does not exist and cannot be created: {}",
-                    self.session.output_dir.display(),
-                    e
-                ));
-            }
-        }
+        // output_dir validation removed — session output now uses storage.data_dir
 
         // agent.command must be found on PATH (or be an absolute/relative path that exists)
         if !self.agent.command.is_empty() {
@@ -728,7 +741,8 @@ event_log = "harness-events.jsonl"
         config.apply_cli_overrides(&overrides);
         assert_eq!(config.session.max_iterations, 99);
         assert_eq!(config.session.prompt_file, PathBuf::from("cli-prompt.md"));
-        assert_eq!(config.session.output_dir, PathBuf::from("/cli/output"));
+        // output_dir override is deprecated and no longer applied
+        assert_eq!(config.session.output_dir, PathBuf::from("."));
         assert_eq!(config.watchdog.stale_timeout_mins, 45);
         assert_eq!(config.retry.max_empty_retries, 7);
     }
@@ -1035,13 +1049,7 @@ data_dir = ".my-data"
             .any(|e| e.contains("session.prompt_file") && e.contains("does not exist")));
     }
 
-    #[test]
-    fn test_validate_uncreatable_output_dir() {
-        let mut config = valid_config();
-        config.session.output_dir = PathBuf::from("/nonexistent/deeply/nested/dir");
-        let errors = config.validate();
-        assert!(errors.iter().any(|e| e.contains("session.output_dir")));
-    }
+    // test_validate_uncreatable_output_dir removed — output_dir is deprecated
 
     #[test]
     fn test_validate_empty_command() {
