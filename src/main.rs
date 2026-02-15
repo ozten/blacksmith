@@ -20,14 +20,14 @@ use tracing_subscriber::EnvFilter;
 /// dispatch a prompt, monitor the session, enforce health invariants,
 /// collect metrics, and repeat.
 #[derive(Parser, Debug)]
-#[command(name = "simple-agent-harness", version, about)]
+#[command(name = "blacksmith", version, about)]
 pub struct Cli {
     /// Override max iterations (default: from config)
     #[arg(value_name = "MAX_ITERATIONS")]
     max_iterations: Option<u32>,
 
     /// Config file path
-    #[arg(short, long, default_value = "harness.toml")]
+    #[arg(short, long, default_value = "blacksmith.toml")]
     config: PathBuf,
 
     /// Prompt file path (overrides config)
@@ -111,7 +111,7 @@ async fn main() {
     tracing::debug!(?config, "resolved configuration");
 
     if cli.dry_run {
-        println!("simple-agent-harness v{}", env!("CARGO_PKG_VERSION"));
+        println!("blacksmith v{}", env!("CARGO_PKG_VERSION"));
         println!("Config file: {}", cli.config.display());
         println!();
         println!("Resolved configuration:");
@@ -190,11 +190,11 @@ async fn main() {
     }
 
     if cli.status {
-        let status_path = config.session.output_dir.join("harness.status");
+        let status_path = config.session.output_dir.join("blacksmith.status");
         match status::display_status(&status_path) {
             Ok(true) => {}
             Ok(false) => {
-                println!("No running harness detected.");
+                println!("No running blacksmith detected.");
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to read status");
@@ -210,7 +210,7 @@ async fn main() {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         max_iterations = config.session.max_iterations,
-        "simple-agent-harness starting"
+        "blacksmith starting"
     );
 
     // Run the main loop

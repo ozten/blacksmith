@@ -1,5 +1,5 @@
 [package]
-name = "simple-agent-harness"
+name = "blacksmith"
 version = "0.1.0"
 edition = "2021"
 description = "A Rust CLI tool that runs an AI coding agent in a supervised loop"

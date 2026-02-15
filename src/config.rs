@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-/// Top-level configuration loaded from harness.toml.
+/// Top-level configuration loaded from blacksmith.toml (or harness.toml for backwards compat).
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 #[derive(Default, Clone)]
@@ -20,8 +20,9 @@ pub struct HarnessConfig {
 
 impl HarnessConfig {
     /// Load configuration from a TOML file. If the file doesn't exist,
-    /// returns compiled defaults. Returns an error only if the file exists
-    /// but can't be read or parsed.
+    /// falls back to harness.toml for backwards compatibility.
+    /// If neither file exists, returns compiled defaults.
+    /// Returns an error only if a file exists but can't be read or parsed.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
@@ -32,7 +33,20 @@ impl HarnessConfig {
                     })?;
                 Ok(config)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Try harness.toml fallback for backwards compatibility
+                let fallback = Path::new("harness.toml");
+                if path
+                    .file_name()
+                    .map(|f| f == "blacksmith.toml")
+                    .unwrap_or(false)
+                    && fallback.exists()
+                {
+                    tracing::info!("blacksmith.toml not found, falling back to harness.toml");
+                    return Self::load(fallback);
+                }
+                Ok(Self::default())
+            }
             Err(e) => Err(ConfigError::Read {
                 path: path.to_path_buf(),
                 source: e,

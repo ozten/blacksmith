@@ -62,7 +62,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
     let mut consecutive_rate_limits = 0u32;
 
     // Status file: write state transitions atomically
-    let status_path = config.session.output_dir.join("harness.status");
+    let status_path = config.session.output_dir.join("blacksmith.status");
     let mut status = StatusTracker::new(status_path, max_iterations, global_iteration);
     status.update(HarnessState::Starting);
 
@@ -532,6 +532,7 @@ async fn run_session_with_watchdog(
 
     let mut child = tokio::process::Command::new(&config.agent.command)
         .args(&args)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(output_file))
         .stderr(std::process::Stdio::from(output_file_stderr))
         .process_group(0)
@@ -1215,7 +1216,10 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 1);
         let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(parsed["committed"], true, "committed should be true when bd-finish detected");
+        assert_eq!(
+            parsed["committed"], true,
+            "committed should be true when bd-finish detected"
+        );
     }
 
     #[tokio::test]
@@ -1239,7 +1243,10 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"Done."}\
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 1);
         let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(parsed["committed"], false, "committed should be false when no commit pattern matched");
+        assert_eq!(
+            parsed["committed"], false,
+            "committed should be false when no commit pattern matched"
+        );
     }
 
     #[tokio::test]
@@ -1261,10 +1268,7 @@ echo "Changes committed via git commit -m fix"
         let mut config = test_config(dir.path(), script.to_str().unwrap(), vec![]);
         config.session.max_iterations = 1;
         config.backoff.initial_delay_secs = 0;
-        config.hooks.post_session = vec![format!(
-            "echo $HARNESS_COMMITTED > {}",
-            marker.display()
-        )];
+        config.hooks.post_session = vec![format!("echo $HARNESS_COMMITTED > {}", marker.display())];
 
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 

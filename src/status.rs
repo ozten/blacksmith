@@ -1,4 +1,4 @@
-/// Status file: writes `harness.status` as JSON on every state transition.
+/// Status file: writes `blacksmith.status` as JSON on every state transition.
 ///
 /// Uses atomic write pattern: write to temp file then rename.
 use chrono::{DateTime, Utc};
@@ -20,7 +20,7 @@ pub enum HarnessState {
     ShuttingDown,
 }
 
-/// The JSON payload written to `harness.status`.
+/// The JSON payload written to `blacksmith.status`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusData {
     pub pid: u32,
@@ -57,7 +57,7 @@ impl StatusFile {
             serde_json::to_string_pretty(data).map_err(|e| StatusError::Serialize { source: e })?;
 
         let dir = self.path.parent().unwrap_or(Path::new("."));
-        let tmp_path = dir.join(format!(".harness.status.tmp.{}", std::process::id()));
+        let tmp_path = dir.join(format!(".blacksmith.status.tmp.{}", std::process::id()));
 
         std::fs::write(&tmp_path, json.as_bytes()).map_err(|e| StatusError::Write {
             path: tmp_path.clone(),
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn test_status_file_atomic_write() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
         let sf = StatusFile::new(path.clone());
 
         let data = StatusData {
@@ -408,7 +408,7 @@ mod tests {
         // Verify no temp file left behind
         let tmp_path = dir
             .path()
-            .join(format!(".harness.status.tmp.{}", std::process::id()));
+            .join(format!(".blacksmith.status.tmp.{}", std::process::id()));
         assert!(
             !tmp_path.exists(),
             "temp file should be cleaned up by rename"
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn test_status_file_overwrite() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
         let sf = StatusFile::new(path.clone());
 
         let mut data = StatusData {
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn test_status_file_remove() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
         let sf = StatusFile::new(path.clone());
 
         let data = StatusData {
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn test_status_tracker_lifecycle() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
 
         let mut tracker = StatusTracker::new(path.clone(), 25, 100);
 
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_status_file_write_to_nonexistent_dir_fails() {
-        let sf = StatusFile::new(PathBuf::from("/nonexistent/dir/harness.status"));
+        let sf = StatusFile::new(PathBuf::from("/nonexistent/dir/blacksmith.status"));
         let data = StatusData {
             pid: 1,
             state: HarnessState::Starting,
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn test_status_file_read_roundtrip() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
         let sf = StatusFile::new(path.clone());
 
         let now = Utc::now();
@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn test_status_file_read_invalid_json() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
         std::fs::write(&path, "not valid json").unwrap();
         let sf = StatusFile::new(path);
 
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn test_display_status_no_file() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
         let result = display_status(&path).unwrap();
         assert!(!result);
     }
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn test_display_status_with_data() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("harness.status");
+        let path = dir.path().join("blacksmith.status");
         let sf = StatusFile::new(path.clone());
 
         // Use current PID so the "alive" check passes
