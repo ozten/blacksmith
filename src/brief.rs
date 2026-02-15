@@ -7,9 +7,24 @@ use std::path::Path;
 /// Queries open improvements from DB, formats them as markdown.
 /// Returns empty string (no output) if no DB file exists.
 pub fn handle_brief(db_path: &Path) -> Result<(), String> {
+    let text = generate_brief(db_path)?;
+    if !text.is_empty() {
+        print!("{text}");
+    }
+    Ok(())
+}
+
+/// Generate the brief snippet as a string for prompt injection.
+///
+/// Returns an empty string when:
+/// - The database file doesn't exist (first run)
+/// - The database has no improvements at all
+///
+/// Otherwise returns the formatted brief with header and open improvement lines.
+pub fn generate_brief(db_path: &Path) -> Result<String, String> {
     // If no database file exists, silently produce no output
     if !db_path.exists() {
-        return Ok(());
+        return Ok(String::new());
     }
 
     let conn = db::open_or_create(db_path).map_err(|e| format!("Failed to open database: {e}"))?;
@@ -22,16 +37,19 @@ pub fn handle_brief(db_path: &Path) -> Result<(), String> {
 
     // No improvements at all — no output
     if total == 0 {
-        return Ok(());
+        return Ok(String::new());
     }
 
-    println!("## OPEN IMPROVEMENTS ({} of {})\n", open.len(), total);
+    let mut output = format!("## OPEN IMPROVEMENTS ({} of {})\n", open.len(), total);
 
     for imp in &open {
-        println!("{} [{}] {}", imp.ref_id, imp.category, imp.title);
+        output.push_str(&format!(
+            "\n{} [{}] {}",
+            imp.ref_id, imp.category, imp.title
+        ));
     }
 
-    Ok(())
+    Ok(output)
 }
 
 #[cfg(test)]

@@ -111,8 +111,12 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
             break;
         }
 
-        // 2. Assemble prompt (read file + run prepend_commands)
-        let prompt = match prompt::assemble(&config.prompt, &config.session.prompt_file) {
+        // 2. Assemble prompt (read file + run prepend_commands + brief injection)
+        let prompt = match prompt::assemble(
+            &config.prompt,
+            &config.session.prompt_file,
+            &config.session.output_dir,
+        ) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(error = %e, "failed to assemble prompt");

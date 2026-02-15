@@ -1,21 +1,23 @@
-## Last Session: Implement brief command with improvement context output (simple-agent-harness-11h)
+## Last Session: Integrate brief injection into session loop pre-session step (simple-agent-harness-2pg)
 
 ### Completed
-- Created `src/brief.rs` with `handle_brief` function
-- `blacksmith brief` generates markdown snippet for prompt injection
-- Queries open improvements from DB, formats as: `## OPEN IMPROVEMENTS (N of M)` followed by `Rxx [category] title` lines
-- Returns no output if DB file doesn't exist or has no improvements
-- Added `db::count_improvements` helper to `src/db.rs`
-- Wired `Brief` subcommand in `src/main.rs` (top-level, not under metrics)
-- 5 new tests: no DB file, empty DB, shows open, excludes non-open, format matches PRD
-- All 183 tests pass, clippy clean (only pre-existing dead_code warnings), fmt applied
+- Added `generate_brief(db_path) -> Result<String, String>` to `src/brief.rs` returning brief text as a string
+- Refactored `handle_brief` to use `generate_brief` internally (no behavior change for CLI)
+- Modified `prompt::assemble` to accept `output_dir` parameter and auto-inject brief
+- Assembly sequence: prepend_commands output → brief from blacksmith.db → prompt file content
+- Brief is silently skipped when no DB exists (first run) or DB has no improvements
+- Brief generation errors are logged as warnings and skipped (non-fatal)
+- Updated call site in `runner.rs` to pass `config.session.output_dir`
+- Updated all 12 existing prompt tests to pass output_dir
+- Added 4 new tests: no DB skips brief, empty DB skips brief, brief after prepend, brief without prepend
+- All 187 tests pass, clippy clean (only pre-existing dead_code warnings), fmt applied
 
 ### Current State
-- `blacksmith brief` is fully functional
-- Uses same `--output-dir` flag to locate DB as `improve` commands
+- Brief injection is fully integrated into the session loop prompt assembly
+- The brief appears between prepend_commands output and the prompt file content, separated by `\n---\n`
 - Pre-existing dead_code warnings remain for unimplemented features
 
 ### Suggested Next Tasks
 - Create events and observations tables (cl6) — P1, ready
-- Integrate brief injection into session loop pre-session step (2pg) — P1, now unblocked by this bead
-- Add quantitative metrics summary to brief command output (pcb) — P2, now unblocked by this bead
+- Add quantitative metrics summary to brief command output (pcb) — P2, now unblocked
+- Implement improve show/update/promote/dismiss/search commands (v25) — P2, ready
