@@ -1,26 +1,26 @@
-## Last Session: Implement task_manifest.toml parsing and manifest application (v6v)
+## Last Session: Implement scheduler for assigning beads to idle workers (1ky)
 
 ### Completed
-- Created src/task_manifest.rs with full parsing and application logic
-- TaskManifest struct: parses task_manifest.toml with serde/toml
-- Sections supported:
-  - [[lib_rs_additions]]: mod_declaration and reexport kinds, appended to lib.rs (falls back to main.rs)
-  - [[cargo_toml_additions]]: dependency and dev_dependency kinds, merged into Cargo.toml [dependencies]/[dev-dependencies]
-  - [[mod_rs_additions]]: targeted append to any mod.rs file
-  - [[ts_index_additions]]: targeted append to any TypeScript index.ts barrel file
-- parse(path) and parse_str(content) for file and string-based parsing
-- apply(manifest, root) applies all entries to a worktree, returns count of entries applied
-- All operations are idempotent (skip if line already exists / dep already present)
-- ManifestError enum: Io, Parse, CargoTomlParse
-- Registered module in main.rs
-- 15 new tests covering: parsing, invalid kinds, all apply types, idempotency, fallbacks, error cases
-- All 524 tests pass, clippy clean, fmt clean
+- Extended src/scheduler.rs with scheduler types and assignment logic
+- Added `ReadyBead` struct: id, priority, affected_globs (Option<Vec<String>>)
+- Added `InProgressAssignment` struct: bead_id, affected_globs (Option<Vec<String>>)
+- Implemented `next_assignable_tasks(ready_beads, in_progress)`:
+  - Returns bead IDs whose affected sets don't overlap with any in-progress task
+  - Handles None affected sets (= "affects everything") for both beads and assignments
+  - If any in-progress task has no affected set, no new tasks can be assigned
+  - If nothing is in progress, all ready beads are assignable
+  - Preserves input order (caller sorts by priority)
+- Implemented `schedule_next(ready_beads, in_progress)`:
+  - Picks the first (highest-priority) non-conflicting bead
+  - Returns None if nothing can be assigned
+- 15 new scheduler tests covering all edge cases
+- All 539 tests pass, clippy clean, fmt clean
 
 ### Current State
-- task_manifest.rs is ready for use by the integrator module
-- Follows spec from SPEC-v3-agents.md lines 511-569
+- scheduler.rs now has full scheduling logic ready for the coordinator
+- Reference: SPEC-v3-agents.md lines 462-489
 
 ### Suggested Next Tasks
-- **1ky**: Implement scheduler for assigning beads to idle workers (P1)
+- **3mu**: Wire multi-agent coordinator into blacksmith run (P1, blocked on this)
 - **x1a**: Implement session compression with zstd (P2)
 - **e2l**: Implement raw adapter with pass-through extraction (P2)

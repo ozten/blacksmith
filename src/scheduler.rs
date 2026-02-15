@@ -1,4 +1,4 @@
-//! Affected-set parsing and glob overlap detection for multi-agent scheduling.
+//! Scheduler for assigning beads to idle workers.
 //!
 //! Beads declare their affected set in the `design` field:
 //!   `affected: src/analytics/**/*.rs, src/lib.rs`
@@ -6,6 +6,10 @@
 //! The scheduler uses these sets to determine which tasks can run in parallel.
 //! Two tasks overlap if any of their globs could match the same files.
 //! A bead without an affected set is treated as affecting everything.
+//!
+//! The scheduler runs when a worker becomes idle. It queries for ready beads
+//! (open status, all deps closed), filters by affected set overlap with
+//! in-progress tasks, and assigns the highest-priority non-conflicting task.
 
 /// Parse the affected set from a bead's design field.
 ///
@@ -100,6 +104,98 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+// ── Scheduler types and logic ──────────────────────────────────────
+
+/// A bead that is ready for assignment (open, all deps closed).
+#[derive(Debug, Clone)]
+pub struct ReadyBead {
+    /// The bead identifier (e.g. "beads-abc-123").
+    pub id: String,
+    /// Priority (lower number = higher priority; 0 = critical, 4 = backlog).
+    pub priority: u32,
+    /// Parsed affected globs from the bead's design field.
+    /// `None` means the bead didn't declare an affected set (treats as "everything").
+    pub affected_globs: Option<Vec<String>>,
+}
+
+/// An in-progress assignment with its locked affected set.
+#[derive(Debug, Clone)]
+pub struct InProgressAssignment {
+    /// The bead identifier being worked on.
+    pub bead_id: String,
+    /// Parsed affected globs for this assignment.
+    /// `None` means it affects everything.
+    pub affected_globs: Option<Vec<String>>,
+}
+
+/// Return the list of bead IDs from `ready_beads` whose affected sets
+/// do not overlap with any in-progress task's affected set.
+///
+/// Beads are returned in their original order (assumed to be sorted by priority).
+/// A bead with no affected set (`None`) is treated as affecting everything and
+/// will conflict with all in-progress tasks (unless there are none in progress).
+pub fn next_assignable_tasks(
+    ready_beads: &[ReadyBead],
+    in_progress: &[InProgressAssignment],
+) -> Vec<String> {
+    // If nothing is in progress, all ready beads are assignable.
+    if in_progress.is_empty() {
+        return ready_beads.iter().map(|b| b.id.clone()).collect();
+    }
+
+    // Collect all locked globs from in-progress assignments.
+    // If any in-progress task has no affected set, it locks everything.
+    let mut locked_globs: Vec<&str> = Vec::new();
+    let mut any_in_progress_locks_all = false;
+
+    for a in in_progress {
+        match &a.affected_globs {
+            None => {
+                any_in_progress_locks_all = true;
+                break;
+            }
+            Some(globs) => {
+                for g in globs {
+                    locked_globs.push(g.as_str());
+                }
+            }
+        }
+    }
+
+    // If any in-progress task locks everything, no new tasks can be assigned.
+    if any_in_progress_locks_all {
+        return Vec::new();
+    }
+
+    let locked_owned: Vec<String> = locked_globs.iter().map(|s| s.to_string()).collect();
+
+    ready_beads
+        .iter()
+        .filter(|b| {
+            match &b.affected_globs {
+                // No affected set = affects everything → conflicts with any lock.
+                None => false,
+                Some(bead_globs) => !globs_overlap(bead_globs, &locked_owned),
+            }
+        })
+        .map(|b| b.id.clone())
+        .collect()
+}
+
+/// Pick the single highest-priority bead that can be assigned without
+/// conflicting with any in-progress task.
+///
+/// `ready_beads` should already be sorted by priority (ascending).
+/// Returns `None` if no bead can be assigned.
+pub fn schedule_next(
+    ready_beads: &[ReadyBead],
+    in_progress: &[InProgressAssignment],
+) -> Option<String> {
+    next_assignable_tasks(ready_beads, in_progress)
+        .into_iter()
+        .next()
 }
 
 #[cfg(test)]
@@ -328,5 +424,174 @@ mod tests {
     #[test]
     fn strip_ci_exact() {
         assert_eq!(strip_prefix_ci("affected:", "affected:"), Some(""));
+    }
+
+    // ── next_assignable_tasks tests ──
+
+    fn bead(id: &str, priority: u32, globs: Option<Vec<&str>>) -> ReadyBead {
+        ReadyBead {
+            id: id.to_string(),
+            priority,
+            affected_globs: globs.map(|g| g.into_iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    fn assignment(bead_id: &str, globs: Option<Vec<&str>>) -> InProgressAssignment {
+        InProgressAssignment {
+            bead_id: bead_id.to_string(),
+            affected_globs: globs.map(|g| g.into_iter().map(|s| s.to_string()).collect()),
+        }
+    }
+
+    #[test]
+    fn assignable_no_in_progress_returns_all() {
+        let beads = vec![
+            bead("b1", 1, Some(vec!["src/db.rs"])),
+            bead("b2", 2, Some(vec!["src/config.rs"])),
+        ];
+        let result = next_assignable_tasks(&beads, &[]);
+        assert_eq!(result, vec!["b1", "b2"]);
+    }
+
+    #[test]
+    fn assignable_no_ready_beads_returns_empty() {
+        let in_progress = vec![assignment("x1", Some(vec!["src/**"]))];
+        let result = next_assignable_tasks(&[], &in_progress);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn assignable_overlapping_filtered_out() {
+        let beads = vec![
+            bead("b1", 1, Some(vec!["src/db.rs"])),
+            bead("b2", 2, Some(vec!["tests/**"])),
+        ];
+        let in_progress = vec![assignment("x1", Some(vec!["src/**"]))];
+        let result = next_assignable_tasks(&beads, &in_progress);
+        // b1 overlaps with src/**, b2 (tests/**) does not
+        assert_eq!(result, vec!["b2"]);
+    }
+
+    #[test]
+    fn assignable_no_affected_set_on_bead_conflicts_with_everything() {
+        let beads = vec![
+            bead("b1", 1, None), // no affected set → conflicts
+            bead("b2", 2, Some(vec!["tests/**"])),
+        ];
+        let in_progress = vec![assignment("x1", Some(vec!["src/db.rs"]))];
+        let result = next_assignable_tasks(&beads, &in_progress);
+        assert_eq!(result, vec!["b2"]);
+    }
+
+    #[test]
+    fn assignable_no_affected_set_on_in_progress_locks_all() {
+        let beads = vec![
+            bead("b1", 1, Some(vec!["src/db.rs"])),
+            bead("b2", 2, Some(vec!["tests/**"])),
+        ];
+        let in_progress = vec![assignment("x1", None)]; // locks everything
+        let result = next_assignable_tasks(&beads, &in_progress);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn assignable_multiple_in_progress_combined_locks() {
+        let beads = vec![
+            bead("b1", 1, Some(vec!["src/db.rs"])),
+            bead("b2", 2, Some(vec!["docs/**"])),
+            bead("b3", 3, Some(vec!["tests/**"])),
+        ];
+        let in_progress = vec![
+            assignment("x1", Some(vec!["src/**"])),
+            assignment("x2", Some(vec!["tests/**"])),
+        ];
+        let result = next_assignable_tasks(&beads, &in_progress);
+        // b1 overlaps src/**, b3 overlaps tests/**, only b2 (docs/**) is free
+        assert_eq!(result, vec!["b2"]);
+    }
+
+    #[test]
+    fn assignable_preserves_order() {
+        let beads = vec![
+            bead("p1", 1, Some(vec!["src/a.rs"])),
+            bead("p2", 2, Some(vec!["src/b.rs"])),
+            bead("p3", 3, Some(vec!["src/c.rs"])),
+        ];
+        // Lock something unrelated
+        let in_progress = vec![assignment("x1", Some(vec!["tests/**"]))];
+        let result = next_assignable_tasks(&beads, &in_progress);
+        assert_eq!(result, vec!["p1", "p2", "p3"]);
+    }
+
+    #[test]
+    fn assignable_disjoint_globs_all_assignable() {
+        let beads = vec![
+            bead("b1", 1, Some(vec!["src/db.rs"])),
+            bead("b2", 2, Some(vec!["src/config.rs"])),
+        ];
+        let in_progress = vec![assignment("x1", Some(vec!["tests/**"]))];
+        let result = next_assignable_tasks(&beads, &in_progress);
+        assert_eq!(result, vec!["b1", "b2"]);
+    }
+
+    #[test]
+    fn assignable_all_overlap() {
+        let beads = vec![
+            bead("b1", 1, Some(vec!["src/**"])),
+            bead("b2", 2, Some(vec!["src/db.rs"])),
+        ];
+        let in_progress = vec![assignment("x1", Some(vec!["src/**"]))];
+        let result = next_assignable_tasks(&beads, &in_progress);
+        assert!(result.is_empty());
+    }
+
+    // ── schedule_next tests ──
+
+    #[test]
+    fn schedule_next_picks_first_assignable() {
+        let beads = vec![
+            bead("b1", 1, Some(vec!["src/db.rs"])),
+            bead("b2", 2, Some(vec!["tests/**"])),
+        ];
+        let in_progress = vec![assignment("x1", Some(vec!["src/**"]))];
+        // b1 overlaps, b2 doesn't → picks b2
+        assert_eq!(schedule_next(&beads, &in_progress), Some("b2".to_string()));
+    }
+
+    #[test]
+    fn schedule_next_picks_highest_priority_when_all_free() {
+        let beads = vec![
+            bead("low", 3, Some(vec!["src/a.rs"])),
+            bead("high", 1, Some(vec!["src/b.rs"])),
+        ];
+        // Beads should be pre-sorted by caller; schedule_next picks the first
+        let result = schedule_next(&beads, &[]);
+        assert_eq!(result, Some("low".to_string())); // first in list order
+    }
+
+    #[test]
+    fn schedule_next_none_when_all_conflict() {
+        let beads = vec![bead("b1", 1, Some(vec!["src/**"]))];
+        let in_progress = vec![assignment("x1", Some(vec!["src/**"]))];
+        assert_eq!(schedule_next(&beads, &in_progress), None);
+    }
+
+    #[test]
+    fn schedule_next_none_when_no_ready_beads() {
+        let in_progress = vec![assignment("x1", Some(vec!["src/**"]))];
+        assert_eq!(schedule_next(&[], &in_progress), None);
+    }
+
+    #[test]
+    fn schedule_next_none_when_empty() {
+        assert_eq!(schedule_next(&[], &[]), None);
+    }
+
+    #[test]
+    fn assignable_bead_with_no_globs_and_no_in_progress() {
+        // A bead with no affected set is assignable when nothing is in progress
+        let beads = vec![bead("b1", 1, None)];
+        let result = next_assignable_tasks(&beads, &[]);
+        assert_eq!(result, vec!["b1"]);
     }
 }

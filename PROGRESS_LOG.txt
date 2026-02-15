@@ -1156,3 +1156,31 @@
 - **1ky**: Implement scheduler for assigning beads to idle workers (P1)
 - **x1a**: Implement session compression with zstd (P2)
 - **e2l**: Implement raw adapter with pass-through extraction (P2)
+
+--- 2026-02-15 15:55:11 | simple-agent-harness-1ky ---
+## Last Session: Implement scheduler for assigning beads to idle workers (1ky)
+
+### Completed
+- Extended src/scheduler.rs with scheduler types and assignment logic
+- Added `ReadyBead` struct: id, priority, affected_globs (Option<Vec<String>>)
+- Added `InProgressAssignment` struct: bead_id, affected_globs (Option<Vec<String>>)
+- Implemented `next_assignable_tasks(ready_beads, in_progress)`:
+  - Returns bead IDs whose affected sets don't overlap with any in-progress task
+  - Handles None affected sets (= "affects everything") for both beads and assignments
+  - If any in-progress task has no affected set, no new tasks can be assigned
+  - If nothing is in progress, all ready beads are assignable
+  - Preserves input order (caller sorts by priority)
+- Implemented `schedule_next(ready_beads, in_progress)`:
+  - Picks the first (highest-priority) non-conflicting bead
+  - Returns None if nothing can be assigned
+- 15 new scheduler tests covering all edge cases
+- All 539 tests pass, clippy clean, fmt clean
+
+### Current State
+- scheduler.rs now has full scheduling logic ready for the coordinator
+- Reference: SPEC-v3-agents.md lines 462-489
+
+### Suggested Next Tasks
+- **3mu**: Wire multi-agent coordinator into blacksmith run (P1, blocked on this)
+- **x1a**: Implement session compression with zstd (P2)
+- **e2l**: Implement raw adapter with pass-through extraction (P2)
