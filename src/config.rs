@@ -20,6 +20,7 @@ pub struct HarnessConfig {
     pub metrics: MetricsConfig,
     pub storage: StorageConfig,
     pub workers: WorkersConfig,
+    pub reconciliation: ReconciliationConfig,
 }
 
 impl HarnessConfig {
@@ -474,6 +475,23 @@ impl Default for WorkersConfig {
             base_branch: "main".to_string(),
             worktrees_dir: "worktrees".to_string(),
         }
+    }
+}
+
+/// Configuration for periodic reconciliation.
+///
+/// After every N successful integrations, run the full test suite on main.
+/// If failures are detected, flag the last N integrated tasks for human review.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ReconciliationConfig {
+    /// Run the full test suite every N successful integrations. Default: 3.
+    pub every: u32,
+}
+
+impl Default for ReconciliationConfig {
+    fn default() -> Self {
+        Self { every: 3 }
     }
 }
 
@@ -1981,6 +1999,62 @@ command = "claude"
         .unwrap();
         let config = HarnessConfig::load(&path).unwrap();
         assert!(!config.agent.uses_legacy_flat_config());
+    }
+
+    // --- Reconciliation config tests ---
+
+    #[test]
+    fn test_default_reconciliation_every() {
+        let config = HarnessConfig::default();
+        assert_eq!(config.reconciliation.every, 3);
+    }
+
+    #[test]
+    fn test_load_reconciliation_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[reconciliation]
+every = 5
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.reconciliation.every, 5);
+    }
+
+    #[test]
+    fn test_reconciliation_default_when_not_specified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[session]
+max_iterations = 10
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.reconciliation.every, 3);
+    }
+
+    #[test]
+    fn test_reconciliation_zero_disables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[reconciliation]
+every = 0
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.reconciliation.every, 0);
     }
 
     #[test]

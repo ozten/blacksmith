@@ -177,6 +177,67 @@ impl CircuitBreaker {
     }
 }
 
+/// Tracks successful integrations and triggers periodic reconciliation.
+///
+/// After every N successful integrations (configurable via `reconciliation.every`),
+/// the full test suite is run on main. If failures are detected, the last N
+/// integrated tasks are flagged for human review.
+#[derive(Debug)]
+pub struct ReconciliationTracker {
+    /// How many successful integrations between reconciliation runs.
+    every: u32,
+    /// Count of successful integrations since the last reconciliation.
+    since_last: u32,
+    /// Bead IDs integrated since the last reconciliation, in order.
+    recent_beads: Vec<String>,
+}
+
+impl ReconciliationTracker {
+    /// Create a new tracker with the given reconciliation interval.
+    pub fn new(every: u32) -> Self {
+        Self {
+            every,
+            since_last: 0,
+            recent_beads: Vec::new(),
+        }
+    }
+
+    /// Record a successful integration. Returns `true` if reconciliation should run now.
+    pub fn record_success(&mut self, bead_id: &str) -> bool {
+        self.since_last += 1;
+        self.recent_beads.push(bead_id.to_string());
+        self.every > 0 && self.since_last >= self.every
+    }
+
+    /// Reset the counter after a reconciliation run (pass or fail).
+    pub fn reset(&mut self) {
+        self.since_last = 0;
+        self.recent_beads.clear();
+    }
+
+    /// Get the bead IDs integrated since the last reconciliation.
+    pub fn recent_beads(&self) -> &[String] {
+        &self.recent_beads
+    }
+
+    /// Current count of integrations since last reconciliation.
+    pub fn count(&self) -> u32 {
+        self.since_last
+    }
+}
+
+/// Result of a reconciliation run on main.
+#[derive(Debug)]
+pub struct ReconciliationResult {
+    /// Whether the full test suite passed.
+    pub passed: bool,
+    /// Test output (stdout + stderr).
+    pub output: String,
+    /// Bead IDs that were integrated since the last reconciliation
+    /// (flagged for review if tests failed).
+    pub flagged_beads: Vec<String>,
+}
+
 /// Result of a single integration attempt.
 #[derive(Debug)]
 pub struct IntegrationResult {
@@ -728,6 +789,90 @@ impl IntegrationQueue {
         }
 
         Ok(())
+    }
+
+    /// Run the full test suite on main as a reconciliation check.
+    ///
+    /// This catches cross-task semantic bugs that pass individual integration
+    /// but fail when combined. If the test suite fails, the recently-integrated
+    /// bead IDs are returned as flagged for human review.
+    pub fn run_reconciliation(&self, tracker: &mut ReconciliationTracker) -> ReconciliationResult {
+        tracing::info!(
+            count = tracker.count(),
+            beads = ?tracker.recent_beads(),
+            "running periodic reconciliation on main"
+        );
+
+        let flagged_beads = tracker.recent_beads().to_vec();
+
+        // Run the test suite in the main repo
+        let (passed, output) = self.run_test_suite(&self.repo_dir);
+
+        if passed {
+            tracing::info!("reconciliation passed — full test suite OK");
+        } else {
+            tracing::warn!(
+                flagged = ?flagged_beads,
+                "reconciliation FAILED — flagging {} beads for review",
+                flagged_beads.len()
+            );
+        }
+
+        // Always reset the tracker after a reconciliation run
+        tracker.reset();
+
+        ReconciliationResult {
+            passed,
+            output,
+            flagged_beads: if passed { Vec::new() } else { flagged_beads },
+        }
+    }
+
+    /// Run the project's test suite. Returns (passed, output).
+    fn run_test_suite(&self, dir: &Path) -> (bool, String) {
+        // Try cargo test first (Rust projects)
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            match Command::new("cargo")
+                .args(["test"])
+                .current_dir(dir)
+                .output()
+            {
+                Ok(output) => {
+                    let combined = format!(
+                        "{}\n{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    return (output.status.success(), combined);
+                }
+                Err(e) => {
+                    return (false, format!("failed to run cargo test: {e}"));
+                }
+            }
+        }
+
+        // Try npm test (Node.js projects)
+        let package_json = dir.join("package.json");
+        if package_json.exists() {
+            match Command::new("npm").args(["test"]).current_dir(dir).output() {
+                Ok(output) => {
+                    let combined = format!(
+                        "{}\n{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    return (output.status.success(), combined);
+                }
+                Err(e) => {
+                    return (false, format!("failed to run npm test: {e}"));
+                }
+            }
+        }
+
+        // No recognized test system — assume pass
+        tracing::debug!("no Cargo.toml or package.json found, skipping reconciliation test suite");
+        (true, "no test runner detected".to_string())
     }
 
     /// Record a failed integration in the database.
@@ -1502,6 +1647,166 @@ edition = "2021"
             "integration with empty manifest should succeed: {:?}",
             result.failure_reason
         );
+    }
+
+    // --- Reconciliation tracker tests ---
+
+    #[test]
+    fn test_reconciliation_tracker_new() {
+        let tracker = ReconciliationTracker::new(3);
+        assert_eq!(tracker.count(), 0);
+        assert!(tracker.recent_beads().is_empty());
+    }
+
+    #[test]
+    fn test_reconciliation_tracker_record_below_threshold() {
+        let mut tracker = ReconciliationTracker::new(3);
+        assert!(!tracker.record_success("beads-a"));
+        assert_eq!(tracker.count(), 1);
+        assert!(!tracker.record_success("beads-b"));
+        assert_eq!(tracker.count(), 2);
+        assert_eq!(tracker.recent_beads(), &["beads-a", "beads-b"]);
+    }
+
+    #[test]
+    fn test_reconciliation_tracker_triggers_at_threshold() {
+        let mut tracker = ReconciliationTracker::new(3);
+        tracker.record_success("beads-a");
+        tracker.record_success("beads-b");
+        let should_reconcile = tracker.record_success("beads-c");
+        assert!(should_reconcile);
+        assert_eq!(tracker.count(), 3);
+        assert_eq!(tracker.recent_beads(), &["beads-a", "beads-b", "beads-c"]);
+    }
+
+    #[test]
+    fn test_reconciliation_tracker_reset() {
+        let mut tracker = ReconciliationTracker::new(3);
+        tracker.record_success("beads-a");
+        tracker.record_success("beads-b");
+        tracker.record_success("beads-c");
+        tracker.reset();
+        assert_eq!(tracker.count(), 0);
+        assert!(tracker.recent_beads().is_empty());
+    }
+
+    #[test]
+    fn test_reconciliation_tracker_zero_every_never_triggers() {
+        let mut tracker = ReconciliationTracker::new(0);
+        assert!(!tracker.record_success("beads-a"));
+        assert!(!tracker.record_success("beads-b"));
+        assert!(!tracker.record_success("beads-c"));
+    }
+
+    #[test]
+    fn test_reconciliation_tracker_every_one_always_triggers() {
+        let mut tracker = ReconciliationTracker::new(1);
+        assert!(tracker.record_success("beads-a"));
+        tracker.reset();
+        assert!(tracker.record_success("beads-b"));
+    }
+
+    #[test]
+    fn test_reconciliation_no_build_system_passes() {
+        // When no Cargo.toml or package.json exists, reconciliation should pass
+        let dir = TempDir::new().unwrap();
+        StdCommand::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+
+        let queue = IntegrationQueue::new(dir.path().to_path_buf(), "main".to_string());
+        let mut tracker = ReconciliationTracker::new(1);
+        tracker.record_success("beads-a");
+        let result = queue.run_reconciliation(&mut tracker);
+        assert!(result.passed);
+        assert!(result.flagged_beads.is_empty());
+        assert_eq!(tracker.count(), 0); // should be reset
+    }
+
+    #[test]
+    fn test_reconciliation_valid_rust_project_passes() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Create a minimal valid Rust project with a passing test
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "reconcile-test"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            r#"
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_add() { assert_eq!(add(1, 2), 3); }
+}
+"#,
+        )
+        .unwrap();
+
+        let queue = IntegrationQueue::new(root.to_path_buf(), "main".to_string());
+        let mut tracker = ReconciliationTracker::new(2);
+        tracker.record_success("beads-x");
+        tracker.record_success("beads-y");
+        let result = queue.run_reconciliation(&mut tracker);
+        assert!(result.passed);
+        assert!(result.flagged_beads.is_empty());
+    }
+
+    #[test]
+    fn test_reconciliation_failing_rust_project_flags_beads() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Create a Rust project with a failing test
+        std::fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "reconcile-fail-test"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            r#"
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_fail() { assert_eq!(1, 2); }
+}
+"#,
+        )
+        .unwrap();
+
+        let queue = IntegrationQueue::new(root.to_path_buf(), "main".to_string());
+        let mut tracker = ReconciliationTracker::new(3);
+        tracker.record_success("beads-a");
+        tracker.record_success("beads-b");
+        tracker.record_success("beads-c");
+        let result = queue.run_reconciliation(&mut tracker);
+        assert!(!result.passed);
+        assert_eq!(result.flagged_beads, vec!["beads-a", "beads-b", "beads-c"]);
+        // Tracker should still be reset after failure
+        assert_eq!(tracker.count(), 0);
     }
 
     #[test]

@@ -607,6 +607,7 @@ mod tests {
                 base_branch: "main".to_string(),
                 worktrees_dir: "worktrees".to_string(),
             },
+            reconciliation: ReconciliationConfig::default(),
         }
     }
 

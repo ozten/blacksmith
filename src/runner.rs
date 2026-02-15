@@ -834,6 +834,7 @@ mod tests {
             metrics: MetricsConfig::default(),
             storage: StorageConfig::default(),
             workers: WorkersConfig::default(),
+            reconciliation: ReconciliationConfig::default(),
         }
     }
 

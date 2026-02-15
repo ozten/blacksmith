@@ -1670,3 +1670,38 @@
 - **3su**: Implement periodic reconciliation with full test suite (P2)
 - **dgh**: Implement session-to-bead attribution (P2)
 - **7ed**: Implement blacksmith integration log and retry commands (P2)
+
+--- 2026-02-15 17:32:02 | simple-agent-harness-3su ---
+## Last Session: Implement periodic reconciliation with full test suite (3su)
+
+### Completed
+- Added `ReconciliationConfig` to `config.rs` with `every: u32` field (default 3)
+  - Configurable via `[reconciliation]` section in blacksmith.toml
+  - Setting `every = 0` disables reconciliation
+- Added `ReconciliationTracker` to `integrator.rs` that:
+  - Counts successful integrations since last reconciliation
+  - Tracks recently-integrated bead IDs for flagging
+  - Returns `true` from `record_success()` when threshold reached
+  - Resets counter and bead list after reconciliation runs
+- Added `ReconciliationResult` struct with pass/fail status, test output, and flagged beads
+- Added `run_reconciliation()` method to `IntegrationQueue` that:
+  - Runs the full test suite on main (cargo test for Rust, npm test for Node.js)
+  - Returns flagged bead IDs when tests fail, empty list when they pass
+  - Always resets the tracker after running
+- Added `run_test_suite()` helper method (private) for running project tests
+- Updated test configs in coordinator.rs and runner.rs with new `reconciliation` field
+- Added 13 new tests (689 total passing):
+  - Config: reconciliation default, load from TOML, default when unspecified, zero disables
+  - Tracker: new, record below threshold, triggers at threshold, reset, zero never triggers, every-one always triggers
+  - Integration: no build system passes, valid Rust project passes, failing Rust project flags beads
+
+### Key Files Modified
+- `src/config.rs` — ReconciliationConfig struct, added to HarnessConfig
+- `src/integrator.rs` — ReconciliationTracker, ReconciliationResult, run_reconciliation, run_test_suite
+- `src/coordinator.rs` — test config update
+- `src/runner.rs` — test config update
+
+### Suggested Next Tasks
+- **dgh**: Implement session-to-bead attribution (P2)
+- **7ed**: Implement blacksmith integration log and retry commands (P2)
+- **dfe**: Implement git revert rollback with entanglement tracking (P2)
