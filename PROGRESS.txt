@@ -1,27 +1,24 @@
-## Last Session: Implement session compression with zstd (x1a)
+## Last Session: Verify raw adapter implementation (e2l)
 
 ### Completed
-- Added `zstd = "0.13"` dependency to Cargo.toml
-- Added `compress_after: u32` field to `StorageConfig` (default: 5)
-  - Configurable via `[storage] compress_after = N` in blacksmith.toml
-- Created `src/compress.rs` with session compression logic:
-  - `compress_old_sessions(sessions_dir, current_iteration, compress_after)`: scans sessions dir
-    for `.jsonl` files whose iteration number is <= `current - compress_after`, compresses them
-    to `.jsonl.zst` using zstd level 3, and removes the originals
-  - Handles edge cases: compress_after=0 (disabled), current < threshold, already-compressed
-    files, non-numeric filenames, missing directories
-  - 10 tests covering all edge cases including round-trip decompression verification
-- Wired compression into `runner.rs`: called after JSONL metrics ingestion in the Proceed branch
-- Added config tests for `compress_after` field (default value, TOML loading)
-- All 569 tests pass, clippy clean (existing dead_code warnings only), fmt clean
+- Verified that the raw adapter (`src/adapters/raw.rs`) is already fully implemented:
+  - `RawAdapter` struct with `new()` and `Default` implementations
+  - `AgentAdapter` trait: `name()` returns "raw", `extract_builtin_metrics()` returns empty vec,
+    `supported_metrics()` returns empty slice, `lines_for_source()` returns raw file lines
+    for all ExtractionSource variants (pass-through behavior)
+  - Wired into `create_adapter()` as fallback for all unknown adapter names
+  - 6 unit tests covering name, empty metrics, empty supported_metrics, pass-through lines,
+    missing file error, and empty file handling
+  - Config integration tests for adapter override to "raw"
+- All 38 adapter tests pass
+- Bead was already implemented in a prior session; this session confirmed completeness
 
 ### Current State
-- Session compression is fully functional in the serial runner (runner.rs)
-- Compression is NOT yet wired into the coordinator (multi-worker mode) — that would need
-  a separate change if desired
-- The retention policy bead (503) depends on this and is now unblocked
+- Raw adapter fully functional as fallback for unrecognized agents
+- Universal metrics (session.output_bytes, exit_code, duration_secs) come from the harness,
+  not the adapter, per spec lines 333-340
 
 ### Suggested Next Tasks
-- **503**: Implement retention policy enforcement (depends on x1a, now unblocked)
-- **e2l**: Implement raw adapter with pass-through extraction (P2)
+- **503**: Implement retention policy enforcement (P2)
 - **tzx**: Implement prompt_via config with arg/stdin/file delivery modes (P2)
+- **hxq**: Add agent.coding and agent.integration config sections (P2)
