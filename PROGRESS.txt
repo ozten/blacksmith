@@ -1,33 +1,35 @@
-## Last Session: Implement retry policy for empty sessions (simple-agent-harness-jr7)
+## Last Session: Implement signal handling and graceful shutdown (simple-agent-harness-7rx)
 
 ### Completed
-- Implemented retry.rs with full empty-session retry policy:
-  - `RetryDecision` enum: Proceed, Retry { attempt }, Skip
-  - `RetryPolicy` struct: tracks max_retries, min_output_bytes, current_attempt
-  - `new()`: creates policy from config values (max_empty_retries, min_output_bytes)
-  - `evaluate(output_bytes)`: returns Proceed if sufficient, Retry if attempts remain, Skip if exhausted
-  - `reset()`: clears attempt counter for new iteration
-  - `current_attempt()`: accessor for current retry count
-  - Logs warnings via tracing when retrying or skipping
+- Implemented signals.rs with full signal handling:
+  - `SignalHandler` struct with Arc-shared atomic state for thread-safe shutdown coordination
+  - `install()`: spawns tokio tasks for SIGINT and SIGTERM listeners
+  - `shutdown_requested()` / `force_kill_requested()`: query shutdown state
+  - `set_child_pid()` / `clear_child_pid()`: track current child for force-kill
+  - `wait_for_force_kill()`: async wait with Notify for immediate force-kill reaction
+  - `request_shutdown()`: mark graceful shutdown (used by STOP file and signals)
+  - `check_stop_file()`: check for STOP file, delete it, mark shutdown
+  - SIGINT handler: first SIGINT sets graceful shutdown, second within 3s triggers force-kill + SIGKILL to process group
+  - SIGTERM handler: same as single SIGINT (graceful shutdown)
+  - `kill_process_group()`: sends SIGKILL via nix killpg
 - 10 tests covering:
-  - proceed_when_output_sufficient: >= threshold returns Proceed
-  - retry_when_output_empty: 0 bytes triggers retry
-  - retry_when_output_below_threshold: just under threshold triggers retry
-  - skip_after_max_retries_exhausted: 3rd attempt with max=2 returns Skip
-  - reset_clears_attempt_counter: reset enables fresh retries
-  - zero_max_retries_skips_immediately: 0 retries = instant skip
-  - proceed_does_not_increment_attempt: successful sessions don't count
-  - proceed_after_retry_when_output_recovers: mid-retry recovery works
-  - exact_threshold_proceeds: boundary test
-  - min_output_zero_always_proceeds: 0 threshold = never retry
-- All 38 tests pass (10 config + 12 session + 6 watchdog + 10 retry), clippy clean, fmt applied
+  - test_initial_state: fresh handler has no flags set
+  - test_request_shutdown: request_shutdown sets the flag
+  - test_child_pid_management: set/clear child PID
+  - test_stop_file_not_present: no STOP file returns NotPresent
+  - test_stop_file_detected_and_deleted: STOP file detected, deleted, shutdown flagged
+  - test_stop_file_sets_shutdown_flag: STOP file triggers shutdown
+  - test_force_kill_flag: force_kill flag works
+  - test_handler_is_clone: Arc-shared state across clones
+  - test_wait_for_force_kill_returns_immediately_when_set: immediate return if already set
+  - test_wait_for_force_kill_wakes_on_notify: async notify wakes waiter
+- All 48 tests pass (10 config + 12 session + 6 watchdog + 10 retry + 10 signals), clippy clean, fmt applied
 
 ### Current State
-- Retry policy is fully functional and tested
-- Unblocks: runner loop (p0y) which depends on retry (jr7), session (d3v, done), and watchdog (fvr, done)
-- Signal handling (7rx) is also still needed before runner can proceed
+- Signal handling is fully functional and tested
+- Unblocks: runner loop (p0y) which depends on signals (7rx), retry (jr7, done), session (d3v, done), and watchdog (fvr, done)
+- All P0 runner dependencies should now be satisfied
 
 ### Suggested Next Tasks
-- Implement signal handling (simple-agent-harness-7rx) — P1, unblocked
+- Implement main runner loop orchestration (simple-agent-harness-p0y) — P0, should now be unblocked
 - Implement structured console logging (simple-agent-harness-yyb) — P2, unblocked
-- After 7rx is done, runner loop (p0y) should be unblocked
