@@ -2,6 +2,7 @@ mod config;
 mod hooks;
 mod metrics;
 mod prompt;
+mod ratelimit;
 mod retry;
 mod runner;
 mod session;

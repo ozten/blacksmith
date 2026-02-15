@@ -6,6 +6,7 @@ use crate::config::HarnessConfig;
 use crate::hooks::{HookEnv, HookRunner};
 use crate::metrics::{EventLog, SessionEvent};
 use crate::prompt;
+use crate::ratelimit;
 use crate::retry::{RetryDecision, RetryPolicy};
 use crate::session::{self, SessionResult};
 use crate::signals::SignalHandler;
@@ -36,6 +37,8 @@ pub enum ExitReason {
     Signal,
     /// Prompt file could not be read.
     PromptError,
+    /// Too many consecutive rate-limited sessions.
+    RateLimited,
 }
 
 /// Run the main iteration loop.
@@ -55,6 +58,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
     );
     let mut consecutive_errors = 0u32;
     const MAX_CONSECUTIVE_ERRORS: u32 = 5;
+    let mut consecutive_rate_limits = 0u32;
 
     // Status file: write state transitions atomically
     let status_path = config.session.output_dir.join("harness.status");
@@ -212,6 +216,9 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         let decision = retry_policy.evaluate(result.output_bytes);
         match decision {
             RetryDecision::Proceed => {
+                // Check for rate limiting in session output
+                let rate_limited = ratelimit::detect_rate_limit(&output_path);
+
                 // Emit event log entry
                 if let Some(ref log) = event_log {
                     let event = SessionEvent::session_complete(
@@ -222,7 +229,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                         result.duration.as_secs(),
                         false, // committed — harness doesn't detect this yet
                         retries_this_session,
-                        false, // rate_limited — not yet implemented
+                        rate_limited,
                     );
                     if let Err(e) = log.append(&event) {
                         tracing::warn!(error = %e, "failed to write event log");
@@ -244,6 +251,53 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                     );
                     hook_runner.run_post_session(&post_env);
                 }
+
+                if rate_limited {
+                    // Rate-limited: do NOT increment productive counter
+                    consecutive_rate_limits += 1;
+                    global_iteration += 1;
+                    retry_policy.reset();
+                    retries_this_session = 0;
+                    save_counter(&config.session.counter_file, global_iteration);
+
+                    status.set_global_iteration(global_iteration);
+                    status.set_consecutive_rate_limits(consecutive_rate_limits);
+
+                    let delay = ratelimit::backoff_delay(
+                        config.backoff.initial_delay_secs,
+                        consecutive_rate_limits,
+                        config.backoff.max_delay_secs,
+                    );
+
+                    tracing::warn!(
+                        consecutive = consecutive_rate_limits,
+                        max = config.backoff.max_consecutive_rate_limits,
+                        backoff_secs = delay,
+                        "rate limit detected in session output"
+                    );
+
+                    if consecutive_rate_limits >= config.backoff.max_consecutive_rate_limits {
+                        tracing::error!(
+                            consecutive_rate_limits,
+                            "max consecutive rate limits reached, exiting"
+                        );
+                        exit_reason = ExitReason::RateLimited;
+                        status.update(HarnessState::ShuttingDown);
+                        break;
+                    }
+
+                    // Apply exponential backoff
+                    status.update(HarnessState::RateLimitedBackoff);
+                    if delay > 0 {
+                        tracing::info!(delay_secs = delay, "rate limit backoff delay");
+                        tokio::time::sleep(Duration::from_secs(delay)).await;
+                    }
+                    continue;
+                }
+
+                // Successful (non-rate-limited) session: reset rate limit counter
+                consecutive_rate_limits = 0;
+                status.set_consecutive_rate_limits(0);
 
                 productive += 1;
                 global_iteration += 1;
@@ -927,6 +981,109 @@ mod tests {
         // Should complete all iterations despite post-hook failures
         assert_eq!(summary.productive_iterations, 2);
         assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limited_session_not_counted_as_productive() {
+        let dir = tempdir().unwrap();
+        // Echo output that contains a rate limit pattern
+        let mut config = test_config(
+            dir.path(),
+            "echo",
+            vec![r#"{"error":"rate_limit","message":"too many requests"}"#.to_string()],
+        );
+        config.session.max_iterations = 3;
+        config.backoff.initial_delay_secs = 0;
+        config.backoff.max_delay_secs = 0;
+        config.backoff.max_consecutive_rate_limits = 5;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        // All sessions are rate-limited, should exit after max_consecutive_rate_limits
+        assert_eq!(summary.productive_iterations, 0);
+        assert_eq!(summary.exit_reason, ExitReason::RateLimited);
+        assert_eq!(summary.global_iteration, 5); // 5 rate-limited sessions
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_resets_on_success() {
+        let dir = tempdir().unwrap();
+        // Create a script that outputs rate limit text on first call, then normal text
+        let script = dir.path().join("rate_limit_script.sh");
+        let marker = dir.path().join("call_count");
+        std::fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+count=0
+if [ -f "{marker}" ]; then
+    count=$(cat "{marker}")
+fi
+count=$((count + 1))
+echo $count > "{marker}"
+if [ $count -le 1 ]; then
+    echo '{{"error":"rate_limit"}}'
+else
+    echo 'normal productive output here'
+fi
+"#,
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+
+        let mut config = test_config(dir.path(), script.to_str().unwrap(), vec![]);
+        config.session.max_iterations = 2;
+        config.backoff.initial_delay_secs = 0;
+        config.backoff.max_delay_secs = 0;
+        config.backoff.max_consecutive_rate_limits = 5;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        // First session: rate-limited (not productive)
+        // Second session: normal (productive)
+        // Third session: normal (productive) — max_iterations reached
+        assert_eq!(summary.productive_iterations, 2);
+        assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
+        // global: 1 (rate-limited) + 2 (productive) = 3
+        assert_eq!(summary.global_iteration, 3);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limited_event_log_shows_rate_limited_true() {
+        let dir = tempdir().unwrap();
+        let event_log_path = dir.path().join("events.jsonl");
+        let mut config = test_config(dir.path(), "echo", vec!["hit your limit".to_string()]);
+        config.session.max_iterations = 1;
+        config.backoff.initial_delay_secs = 0;
+        config.backoff.max_delay_secs = 0;
+        config.backoff.max_consecutive_rate_limits = 2;
+        config.output.event_log = Some(event_log_path.clone());
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        assert_eq!(summary.exit_reason, ExitReason::RateLimited);
+
+        // Verify event log entries have rate_limited=true
+        let contents = std::fs::read_to_string(&event_log_path).unwrap();
+        for line in contents.lines() {
+            let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(
+                parsed["rate_limited"], true,
+                "event should show rate_limited=true"
+            );
+        }
     }
 
     #[tokio::test]

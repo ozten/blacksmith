@@ -1,38 +1,34 @@
-## Last Session: Implement prompt prepend_commands (simple-agent-harness-mxg)
+## Last Session: Implement rate limit detection with exponential backoff (simple-agent-harness-7d0)
 
 ### Completed
-- Created src/prompt.rs with full prompt assembly logic:
-  - `assemble()` function reads prompt file and runs prepend_commands
-  - Prompt file path: uses `[prompt] file` if set, otherwise `session.prompt_file` (fallback)
-  - Each prepend command runs via `sh -c`, stdout captured
-  - Non-empty outputs prepended to prompt, separated by "\n---\n"
-  - Empty/whitespace-only command outputs silently skipped
-  - Non-zero exit commands still have stdout captured (logged as warning)
-  - Spawn failures return `PromptError::CommandFailed`
-  - `PromptError` enum with ReadFile and CommandFailed variants, Display + Error impls
+- Created src/ratelimit.rs with rate limit detection and backoff logic:
+  - `detect_rate_limit()` scans output file for rate limit patterns
+  - `detect_rate_limit_in_text()` internal helper checks text against compiled regex patterns
+  - Patterns: JSON `"error":"rate_limit"`, text `usage limit`, `hit your limit`, `resets.*UTC` (case-insensitive)
+  - Uses `regex` crate with `LazyLock` for compiled pattern caching
+  - `backoff_delay()` computes exponential backoff: `initial_delay * 2^count`, capped at max_delay
+  - Overflow-safe with checked_shl + saturating_mul
 - Integrated into runner.rs:
-  - Replaced `read_prompt()` with `prompt::assemble()` call
-  - Removed the now-unused `read_prompt` helper function
-- Added `mod prompt` to main.rs
-- 13 unit tests covering:
-  - No prepend commands (passthrough)
-  - Prompt file override via `[prompt] file`
-  - Fallback to session.prompt_file
-  - Single and multiple prepend commands
-  - Empty command output skipping
-  - All commands empty returns raw prompt
-  - Non-zero exit still captures output
-  - Missing prompt file error
-  - Whitespace-only output skipped
-  - Multiline command output
-  - run_prepend_command success and empty cases
-- All 116 tests pass, clippy clean, fmt applied
+  - Added `ExitReason::RateLimited` variant
+  - After session passes retry check (Proceed), scans output for rate limit patterns
+  - Rate-limited sessions: don't increment productive counter, apply exponential backoff, update status tracker
+  - After max_consecutive_rate_limits, exits loop with RateLimited reason
+  - Successful sessions reset consecutive_rate_limits counter to 0
+  - Status tracker updated with consecutive_rate_limits on each detection
+  - Event log entries now correctly report rate_limited=true/false
+- Added `mod ratelimit` to main.rs
+- Added `regex = "1"` to Cargo.toml dependencies
+- 21 new tests (18 unit + 3 integration):
+  - Unit: JSON pattern, text patterns (case-insensitive), file detection, missing file, backoff math, overflow safety
+  - Integration: rate-limited sessions not counted productive, resets on success, event log shows rate_limited=true
+- All 137 tests pass, clippy clean, fmt applied
 
 ### Current State
-- Prompt assembly system fully functional per PRD spec
+- Rate limit detection fully functional per PRD spec
 - Pre-existing dead_code warnings remain for unimplemented features (metrics, status, watchdog, session)
+- Note: bead 0t2 (rate limit false positive fix) should refine detection to only inspect final result event
 
 ### Suggested Next Tasks
-- Implement rate limit detection with exponential backoff (7d0) — P3
 - Implement commit detection in session output (ee7) — P3
 - Implement --dry-run mode (5x6) — P3
+- Fix rate limit false positives by only inspecting system events (0t2) — P3
