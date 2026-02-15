@@ -1,36 +1,34 @@
-## Last Session: Implement integration agent spawning for compiler fixes (m5l)
+## Last Session: Implement blacksmith migrate --consolidate command (jkn)
 
 ### Completed
-- Extended `IntegrationQueue::integrate()` to include the full integration loop from the spec:
-  1. Merge main into branch (existing)
-  2. Apply manifest entries from task_manifest.toml (new)
-  3. Run compiler check via `cargo check --message-format=short` or `tsc --noEmit` (new)
-  4. If compiler errors, spawn integration agent to fix them (new)
-  5. Retry loop with circuit breaker (up to MAX_INTEGRATION_ATTEMPTS=3) (new)
-  6. Fast-forward main (existing)
-  7. Record integration with manifest and agent usage info (updated)
-  8. Clean up worktree (existing)
-- Added `run_compiler_check()`: detects Rust (Cargo.toml) or TypeScript (tsconfig.json) projects, runs appropriate compiler check, returns error diagnostics
-- Added `spawn_integration_agent_sync()`: spawns integration agent (ResolvedAgentConfig) synchronously in worktree with prompt containing compiler errors
-- Added `git_add_and_commit()`: stages and commits manifest application changes
-- Updated `integrate()` signature to accept `Option<&ResolvedAgentConfig>` for integration agent and `&mut CircuitBreaker` for retry tracking
-- Updated coordinator.rs to pass `resolved_integration()` config and circuit_breaker to integrate()
-- Coordinator no longer double-manages circuit breaker (integrate() handles attempts internally)
-- Added 8 new tests (647 total passing):
-  - test_compiler_check_no_build_system_passes
-  - test_compiler_check_valid_rust_project
-  - test_compiler_check_invalid_rust_project
-  - test_git_add_and_commit
-  - test_spawn_integration_agent_sync
-  - test_spawn_integration_agent_nonexistent_command
-  - test_integration_with_manifest_application
-  - test_integration_with_compiler_check_no_build_system
+- Added `blacksmith migrate --consolidate` CLI subcommand for V2->V3 file migration
+- Created `src/migrate.rs` module with the consolidation logic:
+  1. Finds `blacksmith.db` / `harness.db` in old output directory → moves to `.blacksmith/blacksmith.db`
+  2. Finds `{output_prefix}-{N}.jsonl` files → moves to `.blacksmith/sessions/{N}.jsonl`
+  3. Moves legacy counter file → `.blacksmith/counter`
+  4. Moves legacy status file → `.blacksmith/status`
+  5. Prints per-file move/skip status and summary
+  6. Non-destructive: moves (rename or copy+delete), skips files that already exist at destination
+  7. Stops immediately on any failure
+- Added Migrate variant to Commands enum in main.rs with --consolidate flag
+- Added handler in main() that loads config, ensures data dir, calls migrate::consolidate()
+- Added 7 new unit tests (657 total passing):
+  - test_find_session_files_basic
+  - test_find_session_files_empty_dir
+  - test_find_session_files_custom_prefix
+  - test_move_file_same_filesystem
+  - test_consolidate_moves_session_files
+  - test_consolidate_moves_database
+  - test_consolidate_moves_harness_db
+  - test_consolidate_skips_existing_files
+  - test_consolidate_no_legacy_files
+  - test_consolidate_moves_status_file
 
 ### Key Files Modified
-- `src/integrator.rs` — compiler check, integration agent spawning, manifest application, updated integrate() signature
-- `src/coordinator.rs` — passes resolved_integration config and circuit_breaker to integrate()
+- `src/main.rs` — added `mod migrate`, `Migrate` subcommand, handler
+- `src/migrate.rs` — new module with consolidate(), find_session_files(), move_file(), tests
 
 ### Suggested Next Tasks
-- **jkn**: Implement blacksmith migrate --consolidate command (P2)
 - **ee2**: Implement graceful metric degradation for adapter limitations (P2)
 - **d2q**: Implement dynamic affected set expansion via .blacksmith-expand (P2)
+- **wdo**: Implement blacksmith workers status and kill commands (P2)

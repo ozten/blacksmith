@@ -13,6 +13,7 @@ mod ingest;
 mod integrator;
 mod metrics;
 mod metrics_cmd;
+mod migrate;
 mod pool;
 mod prompt;
 mod ratelimit;
@@ -106,6 +107,12 @@ enum Commands {
         /// Compress all eligible files and delete beyond retention
         #[arg(long)]
         aggressive: bool,
+    },
+    /// Migrate legacy files into .blacksmith/ structure
+    Migrate {
+        /// Consolidate V2 files (output_prefix-*.jsonl, counter, db) into .blacksmith/
+        #[arg(long)]
+        consolidate: bool,
     },
 }
 
@@ -331,6 +338,25 @@ async fn main() {
             *dry_run,
             *aggressive,
         );
+        return;
+    }
+
+    if let Some(Commands::Migrate { consolidate }) = &cli.command {
+        if !consolidate {
+            eprintln!("Usage: blacksmith migrate --consolidate");
+            eprintln!("Run with --consolidate to move legacy files into .blacksmith/");
+            std::process::exit(1);
+        }
+        let config_for_migrate = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = data_dir::DataDir::new(&config_for_migrate.storage.data_dir);
+        if let Err(e) = dd.ensure_initialized() {
+            eprintln!("Error initializing data directory: {e}");
+            std::process::exit(1);
+        }
+        if let Err(e) = migrate::consolidate(&config_for_migrate, &dd) {
+            eprintln!("Migration failed: {e}");
+            std::process::exit(1);
+        }
         return;
     }
 
