@@ -795,3 +795,31 @@
 
 ### Suggested Next Tasks
 - Implement metrics export, query, and events dump commands (odo) — P3, ready
+
+--- 2026-02-15 14:51:48 | simple-agent-harness-odo ---
+## Last Session: Implement metrics export, query, and events dump commands (simple-agent-harness-odo)
+
+### Completed
+- Added `blacksmith metrics export [--format csv|json]` CLI subcommand
+  - JSON format outputs pretty-printed array of observation objects with session, ts, duration, outcome, and nested data
+  - CSV format dynamically discovers all data keys, outputs header + rows with flattened columns
+  - Error on unknown format
+- Added `blacksmith metrics query <kind> [--last N] [--aggregate avg|trend]` CLI subcommand
+  - Default list mode: shows session, timestamp, value for each matching event
+  - `--aggregate avg`: computes mean of numeric values
+  - `--aggregate trend`: shows values with direction indicator (UP/DOWN/STABLE)
+  - `--last N`: limits to N most recent sessions
+- Added `blacksmith metrics events [--session N]` CLI subcommand
+  - Dumps all raw events with ID, session, timestamp, kind, value, tags
+  - `--session N` filters to a single session
+- Added 3 new db functions: `all_observations()`, `all_events()`, `events_by_kind_last()`
+- Added Export/Query/Events variants to MetricsAction enum, wired in main.rs match
+- Added 17 new tests covering all three commands (edge cases: no db, empty db, various formats/modes, error cases)
+- All 393 tests pass, clippy clean (pre-existing warnings only), fmt applied
+
+### Current State
+- All metrics CLI commands from PRD are now implemented: log, status, targets, migrate, rebuild, export, query, events
+- The metrics subsystem is feature-complete per SPEC-v2-metrics.md
+
+### Suggested Next Tasks
+- Check `bd ready` for the next available task

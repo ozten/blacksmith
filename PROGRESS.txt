@@ -1,19 +1,26 @@
-## Last Session: Implement metrics rebuild command (simple-agent-harness-9cm)
+## Last Session: Implement metrics export, query, and events dump commands (simple-agent-harness-odo)
 
 ### Completed
-- Added `blacksmith metrics rebuild` CLI subcommand
-- Implemented `db::rebuild_observations()` — deletes all observations, then regenerates from events table
-- For each distinct session in events, aggregates (kind, value) pairs into a JSON observation object
-- Handles numeric (int/float), boolean, and string event values with proper JSON typing
-- Extracts `session.duration_ms` from events to populate observation duration_secs
-- Added `handle_rebuild` in metrics_cmd.rs with no-db and empty-db handling
-- Added `Rebuild` variant to MetricsAction enum, wired in main.rs match
-- Added 9 new tests: 5 in db.rs (empty events, from events, clears old, boolean values, no duration) and 4 in metrics_cmd.rs (no db, empty db, regenerates, replaces stale)
-- All 376 tests pass, clippy clean (pre-existing warnings only), fmt applied
+- Added `blacksmith metrics export [--format csv|json]` CLI subcommand
+  - JSON format outputs pretty-printed array of observation objects with session, ts, duration, outcome, and nested data
+  - CSV format dynamically discovers all data keys, outputs header + rows with flattened columns
+  - Error on unknown format
+- Added `blacksmith metrics query <kind> [--last N] [--aggregate avg|trend]` CLI subcommand
+  - Default list mode: shows session, timestamp, value for each matching event
+  - `--aggregate avg`: computes mean of numeric values
+  - `--aggregate trend`: shows values with direction indicator (UP/DOWN/STABLE)
+  - `--last N`: limits to N most recent sessions
+- Added `blacksmith metrics events [--session N]` CLI subcommand
+  - Dumps all raw events with ID, session, timestamp, kind, value, tags
+  - `--session N` filters to a single session
+- Added 3 new db functions: `all_observations()`, `all_events()`, `events_by_kind_last()`
+- Added Export/Query/Events variants to MetricsAction enum, wired in main.rs match
+- Added 17 new tests covering all three commands (edge cases: no db, empty db, various formats/modes, error cases)
+- All 393 tests pass, clippy clean (pre-existing warnings only), fmt applied
 
 ### Current State
-- `metrics rebuild` command is fully functional and tested
-- Drops and recreates observations from events, as specified in PRD
+- All metrics CLI commands from PRD are now implemented: log, status, targets, migrate, rebuild, export, query, events
+- The metrics subsystem is feature-complete per SPEC-v2-metrics.md
 
 ### Suggested Next Tasks
-- Implement metrics export, query, and events dump commands (odo) — P3, ready
+- Check `bd ready` for the next available task

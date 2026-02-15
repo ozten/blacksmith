@@ -458,6 +458,50 @@ pub fn rebuild_observations(conn: &Connection) -> Result<u64> {
     Ok(count)
 }
 
+/// List all observations, ordered by session ascending.
+pub fn all_observations(conn: &Connection) -> Result<Vec<Observation>> {
+    let mut stmt = conn.prepare(
+        "SELECT session, ts, duration, outcome, data FROM observations ORDER BY session ASC",
+    )?;
+    let rows = stmt
+        .query_map([], map_observation)?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// List all events, optionally filtered by session, ordered by id ascending.
+pub fn all_events(conn: &Connection, session: Option<i64>) -> Result<Vec<Event>> {
+    match session {
+        Some(s) => events_by_session(conn, s),
+        None => {
+            let mut stmt = conn
+                .prepare("SELECT id, ts, session, kind, value, tags FROM events ORDER BY id ASC")?;
+            let rows = stmt.query_map([], map_event)?.collect::<Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+    }
+}
+
+/// Query event values for a specific kind, with an optional session limit.
+/// Returns events ordered by session descending, limited to `last` most recent sessions.
+pub fn events_by_kind_last(conn: &Connection, kind: &str, last: Option<i64>) -> Result<Vec<Event>> {
+    match last {
+        Some(limit) => {
+            let mut stmt = conn.prepare(
+                "SELECT id, ts, session, kind, value, tags FROM events \
+                 WHERE kind = ?1 AND session IN \
+                 (SELECT DISTINCT session FROM events ORDER BY session DESC LIMIT ?2) \
+                 ORDER BY session ASC",
+            )?;
+            let rows = stmt
+                .query_map(rusqlite::params![kind, limit], map_event)?
+                .collect::<Result<Vec<_>>>()?;
+            Ok(rows)
+        }
+        None => events_by_kind(conn, kind),
+    }
+}
+
 fn map_observation(row: &rusqlite::Row) -> Result<Observation> {
     Ok(Observation {
         session: row.get(0)?,

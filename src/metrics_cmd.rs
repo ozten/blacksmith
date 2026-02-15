@@ -596,6 +596,264 @@ fn map_severity_to_category(severity: &str) -> String {
     }
 }
 
+/// Handle the `metrics export [--format csv|json]` subcommand.
+///
+/// Exports all observations. JSON format outputs a JSON array of observation objects.
+/// CSV format outputs a header row followed by one row per observation with flattened data.
+pub fn handle_export(db_path: &Path, format: &str) -> Result<(), String> {
+    if !db_path.exists() {
+        println!("No metrics database found. Run some sessions first.");
+        return Ok(());
+    }
+
+    let conn = db::open_or_create(db_path).map_err(|e| format!("Failed to open database: {e}"))?;
+    let observations =
+        db::all_observations(&conn).map_err(|e| format!("Failed to query observations: {e}"))?;
+
+    if observations.is_empty() {
+        println!("No observations to export.");
+        return Ok(());
+    }
+
+    match format {
+        "json" => {
+            let mut items: Vec<serde_json::Value> = Vec::new();
+            for obs in &observations {
+                let data: serde_json::Value = serde_json::from_str(&obs.data).unwrap_or_default();
+                let mut obj = serde_json::Map::new();
+                obj.insert("session".into(), serde_json::json!(obs.session));
+                obj.insert("ts".into(), serde_json::json!(obs.ts));
+                obj.insert(
+                    "duration".into(),
+                    obs.duration
+                        .map(serde_json::Value::from)
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                obj.insert(
+                    "outcome".into(),
+                    obs.outcome
+                        .as_ref()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .unwrap_or(serde_json::Value::Null),
+                );
+                obj.insert("data".into(), data);
+                items.push(serde_json::Value::Object(obj));
+            }
+            let output = serde_json::to_string_pretty(&items)
+                .map_err(|e| format!("JSON serialization failed: {e}"))?;
+            println!("{output}");
+        }
+        "csv" => {
+            // Collect all unique data keys across observations
+            let mut all_keys: Vec<String> = Vec::new();
+            let parsed: Vec<serde_json::Value> = observations
+                .iter()
+                .map(|obs| serde_json::from_str(&obs.data).unwrap_or_default())
+                .collect();
+
+            for data in &parsed {
+                if let Some(obj) = data.as_object() {
+                    for key in obj.keys() {
+                        if !all_keys.contains(key) {
+                            all_keys.push(key.clone());
+                        }
+                    }
+                }
+            }
+            all_keys.sort();
+
+            // Print header
+            let mut header = vec![
+                "session".to_string(),
+                "ts".to_string(),
+                "duration".to_string(),
+                "outcome".to_string(),
+            ];
+            header.extend(all_keys.iter().cloned());
+            println!("{}", header.join(","));
+
+            // Print rows
+            for (obs, data) in observations.iter().zip(parsed.iter()) {
+                let mut row = vec![
+                    obs.session.to_string(),
+                    obs.ts.clone(),
+                    obs.duration.map(|d| d.to_string()).unwrap_or_default(),
+                    obs.outcome.clone().unwrap_or_default(),
+                ];
+                for key in &all_keys {
+                    let val = data.get(key);
+                    let cell = match val {
+                        Some(serde_json::Value::Number(n)) => n.to_string(),
+                        Some(serde_json::Value::Bool(b)) => b.to_string(),
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(serde_json::Value::Null) | None => String::new(),
+                        Some(v) => v.to_string(),
+                    };
+                    row.push(cell);
+                }
+                println!("{}", row.join(","));
+            }
+        }
+        other => {
+            return Err(format!(
+                "Unknown export format '{other}'. Use 'json' or 'csv'."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the `metrics query <kind> [--last N] [--aggregate avg|trend]` subcommand.
+///
+/// Queries event values for a specific kind. With --aggregate avg, computes the average.
+/// With --aggregate trend, shows recent values to reveal direction.
+pub fn handle_query(
+    db_path: &Path,
+    kind: &str,
+    last: Option<i64>,
+    aggregate: Option<&str>,
+) -> Result<(), String> {
+    if !db_path.exists() {
+        println!("No metrics database found. Run some sessions first.");
+        return Ok(());
+    }
+
+    let conn = db::open_or_create(db_path).map_err(|e| format!("Failed to open database: {e}"))?;
+    let events = db::events_by_kind_last(&conn, kind, last)
+        .map_err(|e| format!("Failed to query events: {e}"))?;
+
+    if events.is_empty() {
+        println!("No events found for kind '{kind}'.");
+        return Ok(());
+    }
+
+    match aggregate.unwrap_or("list") {
+        "avg" => {
+            let values: Vec<f64> = events
+                .iter()
+                .filter_map(|e| e.value.as_ref())
+                .filter_map(|v| v.parse::<f64>().ok())
+                .collect();
+
+            if values.is_empty() {
+                println!("No numeric values found for kind '{kind}'.");
+                return Ok(());
+            }
+
+            let avg = values.iter().sum::<f64>() / values.len() as f64;
+            println!("{kind} avg: {avg:.2} (over {} value(s))", values.len());
+        }
+        "trend" => {
+            println!("{:<8} {:<22} {:>12}", "SESSION", "TIMESTAMP", "VALUE");
+            println!("{}", "-".repeat(44));
+            for event in &events {
+                let val = event.value.as_deref().unwrap_or("(none)");
+                let date = if event.ts.len() >= 19 {
+                    &event.ts[..19]
+                } else {
+                    &event.ts
+                };
+                println!("{:<8} {:<22} {:>12}", event.session, date, val);
+            }
+
+            // Show direction indicator
+            let values: Vec<f64> = events
+                .iter()
+                .filter_map(|e| e.value.as_ref())
+                .filter_map(|v| v.parse::<f64>().ok())
+                .collect();
+
+            if values.len() >= 2 {
+                let first_half_avg =
+                    values[..values.len() / 2].iter().sum::<f64>() / (values.len() / 2) as f64;
+                let second_half_avg = values[values.len() / 2..].iter().sum::<f64>()
+                    / (values.len() - values.len() / 2) as f64;
+
+                let direction = if second_half_avg > first_half_avg * 1.05 {
+                    "trending UP"
+                } else if second_half_avg < first_half_avg * 0.95 {
+                    "trending DOWN"
+                } else {
+                    "STABLE"
+                };
+                println!(
+                    "\nTrend: {direction} ({:.2} -> {:.2})",
+                    first_half_avg, second_half_avg
+                );
+            }
+        }
+        "list" => {
+            println!("{:<8} {:<22} {:>12}", "SESSION", "TIMESTAMP", "VALUE");
+            println!("{}", "-".repeat(44));
+            for event in &events {
+                let val = event.value.as_deref().unwrap_or("(none)");
+                let date = if event.ts.len() >= 19 {
+                    &event.ts[..19]
+                } else {
+                    &event.ts
+                };
+                println!("{:<8} {:<22} {:>12}", event.session, date, val);
+            }
+            println!("\n{} event(s)", events.len());
+        }
+        other => {
+            return Err(format!(
+                "Unknown aggregate mode '{other}'. Use 'avg' or 'trend'."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the `metrics events [--session N]` subcommand.
+///
+/// Dumps raw events, optionally filtered to a single session.
+pub fn handle_events(db_path: &Path, session: Option<i64>) -> Result<(), String> {
+    if !db_path.exists() {
+        println!("No metrics database found. Run some sessions first.");
+        return Ok(());
+    }
+
+    let conn = db::open_or_create(db_path).map_err(|e| format!("Failed to open database: {e}"))?;
+    let events =
+        db::all_events(&conn, session).map_err(|e| format!("Failed to query events: {e}"))?;
+
+    if events.is_empty() {
+        if let Some(s) = session {
+            println!("No events found for session {s}.");
+        } else {
+            println!("No events in database.");
+        }
+        return Ok(());
+    }
+
+    println!(
+        "{:<6} {:<8} {:<22} {:<28} {:<20} TAGS",
+        "ID", "SESSION", "TIMESTAMP", "KIND", "VALUE"
+    );
+    println!("{}", "-".repeat(90));
+
+    for event in &events {
+        let val = event.value.as_deref().unwrap_or("");
+        let tags = event.tags.as_deref().unwrap_or("");
+        let date = if event.ts.len() >= 19 {
+            &event.ts[..19]
+        } else {
+            &event.ts
+        };
+        println!(
+            "{:<6} {:<8} {:<22} {:<28} {:<20} {}",
+            event.id, event.session, date, event.kind, val, tags
+        );
+    }
+
+    println!("\n{} event(s)", events.len());
+
+    Ok(())
+}
+
 enum TargetResult {
     Pass { actual: f64 },
     Fail { actual: f64 },
@@ -1667,5 +1925,316 @@ label = "Avg turns per session"
         assert!(db::get_observation(&conn, 99).unwrap().is_none());
         // New observation should exist
         assert!(db::get_observation(&conn, 1).unwrap().is_some());
+    }
+
+    // ── Export tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn export_no_database() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nonexistent.db");
+        handle_export(&path, "json").unwrap();
+    }
+
+    #[test]
+    fn export_empty_database() {
+        let (_dir, path) = test_db_path();
+        db::open_or_create(&path).unwrap();
+        handle_export(&path, "json").unwrap();
+    }
+
+    #[test]
+    fn export_json_format() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-15T10:00:00Z",
+            Some(120),
+            Some("completed"),
+            r#"{"turns.total":42,"cost.estimate_usd":1.5}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        handle_export(&path, "json").unwrap();
+    }
+
+    #[test]
+    fn export_csv_format() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-15T10:00:00Z",
+            Some(120),
+            Some("completed"),
+            r#"{"turns.total":42,"cost.estimate_usd":1.5}"#,
+        )
+        .unwrap();
+        db::upsert_observation(
+            &conn,
+            2,
+            "2026-02-15T11:00:00Z",
+            Some(90),
+            None,
+            r#"{"turns.total":30}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        handle_export(&path, "csv").unwrap();
+    }
+
+    #[test]
+    fn export_unknown_format() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+        db::upsert_observation(&conn, 1, "2026-02-15T10:00:00Z", None, None, "{}").unwrap();
+        drop(conn);
+
+        let result = handle_export(&path, "xml");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown export format"));
+    }
+
+    // ── Query tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn query_no_database() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nonexistent.db");
+        handle_query(&path, "turns.total", None, None).unwrap();
+    }
+
+    #[test]
+    fn query_no_events() {
+        let (_dir, path) = test_db_path();
+        db::open_or_create(&path).unwrap();
+        handle_query(&path, "turns.total", None, None).unwrap();
+    }
+
+    #[test]
+    fn query_list_mode() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("42"),
+            None,
+        )
+        .unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T11:00:00Z",
+            2,
+            "turns.total",
+            Some("55"),
+            None,
+        )
+        .unwrap();
+        drop(conn);
+
+        handle_query(&path, "turns.total", None, None).unwrap();
+    }
+
+    #[test]
+    fn query_avg_mode() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("40"),
+            None,
+        )
+        .unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T11:00:00Z",
+            2,
+            "turns.total",
+            Some("60"),
+            None,
+        )
+        .unwrap();
+        drop(conn);
+
+        // avg of 40 and 60 = 50
+        handle_query(&path, "turns.total", None, Some("avg")).unwrap();
+    }
+
+    #[test]
+    fn query_trend_mode() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        for i in 1..=6 {
+            db::insert_event_with_ts(
+                &conn,
+                "2026-02-15T10:00:00Z",
+                i,
+                "turns.total",
+                Some(&(i * 10).to_string()),
+                None,
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        handle_query(&path, "turns.total", None, Some("trend")).unwrap();
+    }
+
+    #[test]
+    fn query_with_last_limit() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        for i in 1..=10 {
+            db::insert_event_with_ts(
+                &conn,
+                "2026-02-15T10:00:00Z",
+                i,
+                "turns.total",
+                Some(&(i * 10).to_string()),
+                None,
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        // Should only show last 3 sessions
+        handle_query(&path, "turns.total", Some(3), None).unwrap();
+    }
+
+    #[test]
+    fn query_unknown_aggregate() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("42"),
+            None,
+        )
+        .unwrap();
+        drop(conn);
+
+        let result = handle_query(&path, "turns.total", None, Some("median"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown aggregate mode"));
+    }
+
+    // ── Events dump tests ────────────────────────────────────────────
+
+    #[test]
+    fn events_no_database() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nonexistent.db");
+        handle_events(&path, None).unwrap();
+    }
+
+    #[test]
+    fn events_empty_database() {
+        let (_dir, path) = test_db_path();
+        db::open_or_create(&path).unwrap();
+        handle_events(&path, None).unwrap();
+    }
+
+    #[test]
+    fn events_all_sessions() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("42"),
+            None,
+        )
+        .unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T10:00:00Z",
+            1,
+            "cost.estimate_usd",
+            Some("1.5"),
+            None,
+        )
+        .unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T11:00:00Z",
+            2,
+            "turns.total",
+            Some("30"),
+            None,
+        )
+        .unwrap();
+        drop(conn);
+
+        handle_events(&path, None).unwrap();
+    }
+
+    #[test]
+    fn events_filtered_by_session() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("42"),
+            None,
+        )
+        .unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T11:00:00Z",
+            2,
+            "turns.total",
+            Some("30"),
+            None,
+        )
+        .unwrap();
+        drop(conn);
+
+        // Only session 1
+        handle_events(&path, Some(1)).unwrap();
+    }
+
+    #[test]
+    fn events_nonexistent_session() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+        db::insert_event_with_ts(
+            &conn,
+            "2026-02-15T10:00:00Z",
+            1,
+            "turns.total",
+            Some("42"),
+            None,
+        )
+        .unwrap();
+        drop(conn);
+
+        handle_events(&path, Some(999)).unwrap();
     }
 }

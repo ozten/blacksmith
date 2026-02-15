@@ -114,6 +114,29 @@ enum MetricsAction {
     },
     /// Rebuild observations from events (drops and recreates)
     Rebuild,
+    /// Export all observations
+    Export {
+        /// Output format: json or csv (default: json)
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+    /// Query events for a specific metric kind
+    Query {
+        /// Event kind to query (e.g. turns.total, cost.estimate_usd)
+        kind: String,
+        /// Limit to last N sessions
+        #[arg(long)]
+        last: Option<i64>,
+        /// Aggregation mode: avg or trend
+        #[arg(long)]
+        aggregate: Option<String>,
+    },
+    /// Dump raw events
+    Events {
+        /// Filter to a specific session number
+        #[arg(long)]
+        session: Option<i64>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -324,6 +347,13 @@ async fn main() {
             }
             MetricsAction::Migrate { from } => metrics_cmd::handle_migrate(&db_path, from),
             MetricsAction::Rebuild => metrics_cmd::handle_rebuild(&db_path),
+            MetricsAction::Export { format } => metrics_cmd::handle_export(&db_path, format),
+            MetricsAction::Query {
+                kind,
+                last,
+                aggregate,
+            } => metrics_cmd::handle_query(&db_path, kind, *last, aggregate.as_deref()),
+            MetricsAction::Events { session } => metrics_cmd::handle_events(&db_path, *session),
         };
 
         if let Err(e) = result {
