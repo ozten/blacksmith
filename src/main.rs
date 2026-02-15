@@ -1,6 +1,7 @@
 mod adapters;
 mod brief;
 mod commit;
+mod compress;
 mod config;
 mod coordinator;
 mod data_dir;

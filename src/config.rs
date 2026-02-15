@@ -223,12 +223,16 @@ impl Default for CommitDetectionConfig {
 #[serde(default)]
 pub struct StorageConfig {
     pub data_dir: PathBuf,
+    /// Number of iterations to keep uncompressed. Sessions older than
+    /// `current - compress_after` are compressed with zstd. Default: 5.
+    pub compress_after: u32,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             data_dir: PathBuf::from(".blacksmith"),
+            compress_after: 5,
         }
     }
 }
@@ -1023,6 +1027,7 @@ label = "Avg turns"
     fn test_default_storage_data_dir() {
         let config = HarnessConfig::default();
         assert_eq!(config.storage.data_dir, PathBuf::from(".blacksmith"));
+        assert_eq!(config.storage.compress_after, 5);
     }
 
     #[test]
@@ -1039,6 +1044,24 @@ data_dir = ".my-data"
         .unwrap();
         let config = HarnessConfig::load(&path).unwrap();
         assert_eq!(config.storage.data_dir, PathBuf::from(".my-data"));
+        // compress_after should use default when not specified
+        assert_eq!(config.storage.compress_after, 5);
+    }
+
+    #[test]
+    fn test_load_compress_after_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[storage]
+compress_after = 10
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.storage.compress_after, 10);
     }
 
     // --- Validation tests ---

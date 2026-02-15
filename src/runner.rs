@@ -4,6 +4,7 @@
 /// session spawning, watchdog monitoring, retry logic, and signal handling.
 use crate::adapters;
 use crate::commit;
+use crate::compress;
 use crate::config::HarnessConfig;
 use crate::data_dir::DataDir;
 use crate::db;
@@ -326,6 +327,13 @@ pub async fn run(
                         }
                     }
                 }
+
+                // Compress old session files after ingestion
+                compress::compress_old_sessions(
+                    &data_dir.sessions_dir(),
+                    global_iteration,
+                    config.storage.compress_after,
+                );
 
                 // Run post-session hooks
                 if !config.hooks.post_session.is_empty() {

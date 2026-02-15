@@ -1260,3 +1260,32 @@
 - **m5l**: Implement integration agent spawning for compiler fixes (P1, blocked by this)
 - **x1a**: Implement session compression with zstd (P2)
 - **e2l**: Implement raw adapter with pass-through extraction (P2)
+
+--- 2026-02-15 16:06:55 | simple-agent-harness-x1a ---
+## Last Session: Implement session compression with zstd (x1a)
+
+### Completed
+- Added `zstd = "0.13"` dependency to Cargo.toml
+- Added `compress_after: u32` field to `StorageConfig` (default: 5)
+  - Configurable via `[storage] compress_after = N` in blacksmith.toml
+- Created `src/compress.rs` with session compression logic:
+  - `compress_old_sessions(sessions_dir, current_iteration, compress_after)`: scans sessions dir
+    for `.jsonl` files whose iteration number is <= `current - compress_after`, compresses them
+    to `.jsonl.zst` using zstd level 3, and removes the originals
+  - Handles edge cases: compress_after=0 (disabled), current < threshold, already-compressed
+    files, non-numeric filenames, missing directories
+  - 10 tests covering all edge cases including round-trip decompression verification
+- Wired compression into `runner.rs`: called after JSONL metrics ingestion in the Proceed branch
+- Added config tests for `compress_after` field (default value, TOML loading)
+- All 569 tests pass, clippy clean (existing dead_code warnings only), fmt clean
+
+### Current State
+- Session compression is fully functional in the serial runner (runner.rs)
+- Compression is NOT yet wired into the coordinator (multi-worker mode) — that would need
+  a separate change if desired
+- The retention policy bead (503) depends on this and is now unblocked
+
+### Suggested Next Tasks
+- **503**: Implement retention policy enforcement (depends on x1a, now unblocked)
+- **e2l**: Implement raw adapter with pass-through extraction (P2)
+- **tzx**: Implement prompt_via config with arg/stdin/file delivery modes (P2)
