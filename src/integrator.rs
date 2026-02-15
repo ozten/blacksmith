@@ -11,8 +11,109 @@
 use crate::db;
 use crate::worktree;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Maximum number of fix iterations before the circuit breaker trips.
+pub const MAX_INTEGRATION_ATTEMPTS: u32 = 3;
+
+/// State of the circuit breaker for a single bead's integration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitState {
+    /// No attempts yet — integration hasn't started.
+    Closed,
+    /// At least one attempt failed, but retries remain.
+    Retrying { attempt: u32 },
+    /// Max attempts exceeded — escalate to human review.
+    Tripped { attempts: u32 },
+}
+
+impl CircuitState {
+    /// Whether further retry attempts are allowed.
+    pub fn can_retry(&self) -> bool {
+        matches!(self, CircuitState::Closed | CircuitState::Retrying { .. })
+    }
+
+    /// Whether the breaker has tripped (exceeded max attempts).
+    pub fn is_tripped(&self) -> bool {
+        matches!(self, CircuitState::Tripped { .. })
+    }
+
+    /// Current attempt number (0 if no attempts yet).
+    pub fn attempt_count(&self) -> u32 {
+        match self {
+            CircuitState::Closed => 0,
+            CircuitState::Retrying { attempt } => *attempt,
+            CircuitState::Tripped { attempts } => *attempts,
+        }
+    }
+}
+
+impl std::fmt::Display for CircuitState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CircuitState::Closed => write!(f, "closed"),
+            CircuitState::Retrying { attempt } => {
+                write!(f, "retrying (attempt {attempt}/{MAX_INTEGRATION_ATTEMPTS})")
+            }
+            CircuitState::Tripped { attempts } => {
+                write!(f, "tripped after {attempts} attempts")
+            }
+        }
+    }
+}
+
+/// Circuit breaker tracking integration fix attempts per bead.
+///
+/// Each bead gets up to `MAX_INTEGRATION_ATTEMPTS` fix iterations during
+/// integration. After that, the breaker trips and the task is escalated
+/// for human review.
+#[derive(Debug, Default)]
+pub struct CircuitBreaker {
+    /// Attempt counts keyed by bead ID.
+    attempts: HashMap<String, u32>,
+}
+
+impl CircuitBreaker {
+    pub fn new() -> Self {
+        Self {
+            attempts: HashMap::new(),
+        }
+    }
+
+    /// Get the current circuit state for a bead.
+    pub fn state(&self, bead_id: &str) -> CircuitState {
+        match self.attempts.get(bead_id).copied() {
+            None | Some(0) => CircuitState::Closed,
+            Some(n) if n >= MAX_INTEGRATION_ATTEMPTS => CircuitState::Tripped { attempts: n },
+            Some(n) => CircuitState::Retrying { attempt: n },
+        }
+    }
+
+    /// Record a failed fix attempt for a bead. Returns the new state.
+    pub fn record_attempt(&mut self, bead_id: &str) -> CircuitState {
+        let count = self.attempts.entry(bead_id.to_string()).or_insert(0);
+        *count += 1;
+        tracing::info!(
+            bead_id,
+            attempt = *count,
+            max = MAX_INTEGRATION_ATTEMPTS,
+            "circuit breaker: recorded attempt"
+        );
+        self.state(bead_id)
+    }
+
+    /// Reset the circuit breaker for a bead (e.g., after successful integration).
+    pub fn reset(&mut self, bead_id: &str) {
+        self.attempts.remove(bead_id);
+    }
+
+    /// Get attempt count for a bead.
+    pub fn attempt_count(&self, bead_id: &str) -> u32 {
+        self.attempts.get(bead_id).copied().unwrap_or(0)
+    }
+}
 
 /// Result of a single integration attempt.
 #[derive(Debug)]
@@ -709,5 +810,104 @@ mod tests {
         let main_after = queue.get_head_commit(repo_dir).unwrap();
         assert_eq!(main_after, wt_head, "main should point to worktree HEAD");
         assert_ne!(main_before, main_after, "main should have advanced");
+    }
+
+    #[test]
+    fn test_circuit_state_closed_initial() {
+        let cb = CircuitBreaker::new();
+        let state = cb.state("beads-abc");
+        assert_eq!(state, CircuitState::Closed);
+        assert!(state.can_retry());
+        assert!(!state.is_tripped());
+        assert_eq!(state.attempt_count(), 0);
+    }
+
+    #[test]
+    fn test_circuit_state_retrying_after_one_attempt() {
+        let mut cb = CircuitBreaker::new();
+        let state = cb.record_attempt("beads-abc");
+        assert_eq!(state, CircuitState::Retrying { attempt: 1 });
+        assert!(state.can_retry());
+        assert!(!state.is_tripped());
+        assert_eq!(state.attempt_count(), 1);
+    }
+
+    #[test]
+    fn test_circuit_state_retrying_after_two_attempts() {
+        let mut cb = CircuitBreaker::new();
+        cb.record_attempt("beads-abc");
+        let state = cb.record_attempt("beads-abc");
+        assert_eq!(state, CircuitState::Retrying { attempt: 2 });
+        assert!(state.can_retry());
+        assert!(!state.is_tripped());
+        assert_eq!(state.attempt_count(), 2);
+    }
+
+    #[test]
+    fn test_circuit_state_tripped_after_max_attempts() {
+        let mut cb = CircuitBreaker::new();
+        cb.record_attempt("beads-abc");
+        cb.record_attempt("beads-abc");
+        let state = cb.record_attempt("beads-abc");
+        assert_eq!(state, CircuitState::Tripped { attempts: 3 });
+        assert!(!state.can_retry());
+        assert!(state.is_tripped());
+        assert_eq!(state.attempt_count(), 3);
+    }
+
+    #[test]
+    fn test_circuit_breaker_reset() {
+        let mut cb = CircuitBreaker::new();
+        cb.record_attempt("beads-abc");
+        cb.record_attempt("beads-abc");
+        cb.reset("beads-abc");
+        let state = cb.state("beads-abc");
+        assert_eq!(state, CircuitState::Closed);
+        assert_eq!(cb.attempt_count("beads-abc"), 0);
+    }
+
+    #[test]
+    fn test_circuit_breaker_independent_beads() {
+        let mut cb = CircuitBreaker::new();
+        cb.record_attempt("beads-abc");
+        cb.record_attempt("beads-abc");
+        cb.record_attempt("beads-def");
+
+        assert_eq!(cb.attempt_count("beads-abc"), 2);
+        assert_eq!(cb.attempt_count("beads-def"), 1);
+        assert_eq!(cb.state("beads-abc"), CircuitState::Retrying { attempt: 2 });
+        assert_eq!(cb.state("beads-def"), CircuitState::Retrying { attempt: 1 });
+    }
+
+    #[test]
+    fn test_circuit_breaker_exceeds_max() {
+        let mut cb = CircuitBreaker::new();
+        for _ in 0..5 {
+            cb.record_attempt("beads-abc");
+        }
+        let state = cb.state("beads-abc");
+        assert_eq!(state, CircuitState::Tripped { attempts: 5 });
+        assert!(!state.can_retry());
+        assert_eq!(state.attempt_count(), 5);
+    }
+
+    #[test]
+    fn test_circuit_state_display() {
+        assert_eq!(format!("{}", CircuitState::Closed), "closed");
+        assert_eq!(
+            format!("{}", CircuitState::Retrying { attempt: 2 }),
+            "retrying (attempt 2/3)"
+        );
+        assert_eq!(
+            format!("{}", CircuitState::Tripped { attempts: 3 }),
+            "tripped after 3 attempts"
+        );
+    }
+
+    #[test]
+    fn test_circuit_breaker_default() {
+        let cb = CircuitBreaker::default();
+        assert_eq!(cb.attempt_count("nonexistent"), 0);
+        assert_eq!(cb.state("nonexistent"), CircuitState::Closed);
     }
 }
