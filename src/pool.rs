@@ -37,6 +37,7 @@ impl WorkerState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "idle" => Some(WorkerState::Idle),
@@ -68,6 +69,7 @@ pub struct Worker {
 
 /// Outcome of a worker's agent session.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SessionOutcome {
     /// Worker slot ID.
     pub worker_id: u32,
@@ -151,6 +153,7 @@ impl WorkerPool {
     }
 
     /// Number of total worker slots.
+    #[allow(dead_code)]
     pub fn capacity(&self) -> u32 {
         self.workers.len() as u32
     }
@@ -323,6 +326,7 @@ impl WorkerPool {
     }
 
     /// Return a list of workers in the Completed state (ready for integration).
+    #[allow(dead_code)]
     pub fn completed_workers(&self) -> Vec<(u32, i64, PathBuf)> {
         self.workers
             .iter()
@@ -405,6 +409,7 @@ impl WorkerPool {
     }
 
     /// Get active worktree paths (for orphan cleanup).
+    #[allow(dead_code)]
     pub fn active_worktree_paths(&self) -> Vec<PathBuf> {
         self.workers
             .iter()
@@ -415,6 +420,7 @@ impl WorkerPool {
 
     /// Set a worker's state directly for testing purposes.
     #[doc(hidden)]
+    #[allow(dead_code)]
     pub fn set_worker_state_for_test(
         &mut self,
         worker_id: u32,

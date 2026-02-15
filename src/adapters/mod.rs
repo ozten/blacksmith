@@ -20,6 +20,7 @@ pub enum ExtractionSource {
 
 /// Errors produced by adapter operations.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum AdapterError {
     Io(std::io::Error),
     Parse(String),

@@ -12,6 +12,7 @@ use tokio::time::{interval, Duration};
 #[derive(Debug, PartialEq)]
 pub enum WatchdogOutcome {
     /// The process exited on its own before any timeout.
+    #[allow(dead_code)]
     ProcessExited,
     /// The watchdog killed the process group due to stale output.
     Killed,

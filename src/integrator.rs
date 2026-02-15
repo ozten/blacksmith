@@ -183,6 +183,7 @@ impl CircuitBreaker {
 /// the full test suite is run on main. If failures are detected, the last N
 /// integrated tasks are flagged for human review.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ReconciliationTracker {
     /// How many successful integrations between reconciliation runs.
     every: u32,
@@ -192,6 +193,7 @@ pub struct ReconciliationTracker {
     recent_beads: Vec<String>,
 }
 
+#[allow(dead_code)]
 impl ReconciliationTracker {
     /// Create a new tracker with the given reconciliation interval.
     pub fn new(every: u32) -> Self {
@@ -228,6 +230,7 @@ impl ReconciliationTracker {
 
 /// Result of a reconciliation run on main.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ReconciliationResult {
     /// Whether the full test suite passed.
     pub passed: bool,
@@ -240,6 +243,7 @@ pub struct ReconciliationResult {
 
 /// Result of a single integration attempt.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct IntegrationResult {
     /// Worker slot ID that was integrated.
     pub worker_id: u32,
@@ -809,6 +813,7 @@ impl IntegrationQueue {
     /// This catches cross-task semantic bugs that pass individual integration
     /// but fail when combined. If the test suite fails, the recently-integrated
     /// bead IDs are returned as flagged for human review.
+    #[allow(dead_code)]
     pub fn run_reconciliation(&self, tracker: &mut ReconciliationTracker) -> ReconciliationResult {
         tracing::info!(
             count = tracker.count(),
@@ -842,6 +847,7 @@ impl IntegrationQueue {
     }
 
     /// Run the project's test suite. Returns (passed, output).
+    #[allow(dead_code)]
     fn run_test_suite(&self, dir: &Path) -> (bool, String) {
         // Try cargo test first (Rust projects)
         let cargo_toml = dir.join("Cargo.toml");

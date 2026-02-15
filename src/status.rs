@@ -79,6 +79,7 @@ impl StatusFile {
     }
 
     /// Path to the status file.
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

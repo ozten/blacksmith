@@ -114,6 +114,7 @@ pub struct ReadyBead {
     /// The bead identifier (e.g. "beads-abc-123").
     pub id: String,
     /// Priority (lower number = higher priority; 0 = critical, 4 = backlog).
+    #[allow(dead_code)]
     pub priority: u32,
     /// Parsed affected globs from the bead's design field.
     /// `None` means the bead didn't declare an affected set (treats as "everything").
@@ -124,6 +125,7 @@ pub struct ReadyBead {
 #[derive(Debug, Clone)]
 pub struct InProgressAssignment {
     /// The bead identifier being worked on.
+    #[allow(dead_code)]
     pub bead_id: String,
     /// Parsed affected globs for this assignment.
     /// `None` means it affects everything.
@@ -189,6 +191,7 @@ pub fn next_assignable_tasks(
 ///
 /// `ready_beads` should already be sorted by priority (ascending).
 /// Returns `None` if no bead can be assigned.
+#[allow(dead_code)]
 pub fn schedule_next(
     ready_beads: &[ReadyBead],
     in_progress: &[InProgressAssignment],

@@ -262,6 +262,7 @@ fn apply_cargo_toml_additions(
 
 /// Reverse all manifest entries — remove lines that were added by `apply`.
 /// Returns the number of entries reversed.
+#[allow(dead_code)]
 pub fn reverse(manifest: &TaskManifest, root: &Path) -> Result<usize, ManifestError> {
     let mut count = 0;
 
@@ -302,6 +303,7 @@ pub fn reverse(manifest: &TaskManifest, root: &Path) -> Result<usize, ManifestEr
 }
 
 /// Remove specific lines from a file. Returns the number of lines removed.
+#[allow(dead_code)]
 fn reverse_lines_from_file(path: &Path, lines: &[&str]) -> Result<usize, ManifestError> {
     if !path.exists() {
         return Ok(0);
@@ -332,6 +334,7 @@ fn reverse_lines_from_file(path: &Path, lines: &[&str]) -> Result<usize, Manifes
 }
 
 /// Remove Cargo.toml dependencies that were added by the manifest.
+#[allow(dead_code)]
 fn reverse_cargo_toml_additions(
     path: &Path,
     additions: &[CargoTomlAddition],

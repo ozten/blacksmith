@@ -17,6 +17,7 @@ pub struct SessionResult {
     /// Wall-clock duration of the session.
     pub duration: std::time::Duration,
     /// Path to the output JSONL file.
+    #[allow(dead_code)]
     pub output_file: PathBuf,
     /// Child PID (for logging/diagnostics).
     pub pid: u32,

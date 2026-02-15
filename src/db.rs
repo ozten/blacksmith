@@ -311,6 +311,7 @@ pub struct Event {
 
 /// Insert a single event into the events table.
 /// Returns the rowid of the inserted event.
+#[allow(dead_code)]
 pub fn insert_event(
     conn: &Connection,
     session: i64,
@@ -413,6 +414,7 @@ pub fn upsert_observation(
 }
 
 /// Get the observation for a specific session.
+#[allow(dead_code)]
 pub fn get_observation(conn: &Connection, session: i64) -> Result<Option<Observation>> {
     let mut stmt = conn.prepare(
         "SELECT session, ts, duration, outcome, data FROM observations WHERE session = ?1",
@@ -562,6 +564,7 @@ pub fn events_by_kind_last(conn: &Connection, kind: &str, last: Option<i64>) -> 
 
 /// A row from the worker_assignments table.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct WorkerAssignment {
     pub id: i64,
     pub worker_id: i64,
@@ -641,6 +644,7 @@ pub fn get_worker_assignment(conn: &Connection, id: i64) -> Result<Option<Worker
 }
 
 /// List worker assignments by status.
+#[allow(dead_code)]
 pub fn worker_assignments_by_status(
     conn: &Connection,
     status: &str,
@@ -686,6 +690,7 @@ fn map_worker_assignment(row: &rusqlite::Row) -> Result<WorkerAssignment> {
 
 /// A row from the task_file_changes table.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TaskFileChange {
     pub assignment_id: i64,
     pub file_path: String,
@@ -693,6 +698,7 @@ pub struct TaskFileChange {
 }
 
 /// Insert a file change record for a worker assignment.
+#[allow(dead_code)]
 pub fn insert_task_file_change(
     conn: &Connection,
     assignment_id: i64,
@@ -707,6 +713,7 @@ pub fn insert_task_file_change(
 }
 
 /// Get all file changes for a worker assignment.
+#[allow(dead_code)]
 pub fn file_changes_by_assignment(
     conn: &Connection,
     assignment_id: i64,
@@ -730,6 +737,7 @@ pub fn file_changes_by_assignment(
 
 /// A row from the integration_log table.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct IntegrationLogEntry {
     pub id: i64,
     pub assignment_id: i64,
@@ -768,6 +776,7 @@ pub fn insert_integration_log(
 }
 
 /// Get integration log entries for a worker assignment.
+#[allow(dead_code)]
 pub fn integration_log_by_assignment(
     conn: &Connection,
     assignment_id: i64,
@@ -784,6 +793,7 @@ pub fn integration_log_by_assignment(
 
 /// An integration log entry joined with worker_assignment info for display.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct IntegrationLogView {
     pub id: i64,
     pub assignment_id: i64,
@@ -908,6 +918,7 @@ pub fn find_entangled_beads(conn: &Connection, bead_id: &str) -> Result<Vec<(Str
     Ok(rows)
 }
 
+#[allow(dead_code)]
 fn map_integration_log(row: &rusqlite::Row) -> Result<IntegrationLogEntry> {
     Ok(IntegrationLogEntry {
         id: row.get(0)?,

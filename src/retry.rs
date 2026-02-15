@@ -71,6 +71,7 @@ impl RetryPolicy {
     }
 
     /// Current attempt count (0 = no retries yet).
+    #[allow(dead_code)]
     pub fn current_attempt(&self) -> u32 {
         self.current_attempt
     }

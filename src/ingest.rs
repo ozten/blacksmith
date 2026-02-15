@@ -13,6 +13,7 @@ pub struct IngestResult {
     pub turns_total: u64,
     pub cost_estimate_usd: f64,
     pub session_duration_ms: u64,
+    #[allow(dead_code)]
     pub bead_id: Option<String>,
 }
 

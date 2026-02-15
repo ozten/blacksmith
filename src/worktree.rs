@@ -131,6 +131,7 @@ pub fn remove(repo_dir: &Path, wt_path: &Path) -> Result<(), WorktreeError> {
 /// List all git worktrees known to the repository.
 ///
 /// Returns a list of worktree paths (excluding the main worktree).
+#[allow(dead_code)]
 pub fn list(repo_dir: &Path) -> Result<Vec<PathBuf>, WorktreeError> {
     let output = Command::new("git")
         .args(["worktree", "list", "--porcelain"])
@@ -165,6 +166,7 @@ pub fn list(repo_dir: &Path) -> Result<Vec<PathBuf>, WorktreeError> {
 /// Prune stale worktree metadata for worktrees whose directories no longer exist.
 ///
 /// Runs: `git worktree prune`
+#[allow(dead_code)]
 pub fn prune(repo_dir: &Path) -> Result<(), WorktreeError> {
     let output = Command::new("git")
         .args(["worktree", "prune"])
@@ -188,6 +190,7 @@ pub fn prune(repo_dir: &Path) -> Result<(), WorktreeError> {
 /// Any worktree under `worktrees_dir` not in this set will be removed.
 ///
 /// Returns the paths that were cleaned up.
+#[allow(dead_code)]
 pub fn cleanup_orphans(
     repo_dir: &Path,
     worktrees_dir: &Path,

@@ -57,6 +57,7 @@ impl EventLog {
     }
 
     /// Path to the event log file.
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

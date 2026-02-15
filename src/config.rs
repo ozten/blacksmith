@@ -84,6 +84,7 @@ impl HarnessConfig {
 pub struct CliOverrides {
     pub max_iterations: Option<u32>,
     pub prompt: Option<PathBuf>,
+    #[allow(dead_code)]
     pub output_dir: Option<PathBuf>,
     pub timeout: Option<u64>,
     pub retries: Option<u32>,
@@ -228,6 +229,7 @@ impl AgentConfig {
 
     /// Returns true if the legacy flat [agent] section is being used
     /// (i.e., no [agent.coding] section is configured).
+    #[allow(dead_code)]
     pub fn uses_legacy_flat_config(&self) -> bool {
         self.coding.is_none() && self.integration.is_none()
     }
