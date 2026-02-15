@@ -682,3 +682,27 @@
 - Implement --dry-run mode (5x6) — P3, ready
 - Implement --quiet mode for minimal output (r43) — P3, ready
 - Implement config validation with helpful error messages (edb) — P3, ready
+
+--- 2026-02-15 14:35:52 | simple-agent-harness-5x6 ---
+## Last Session: Implement --dry-run mode (simple-agent-harness-5x6)
+
+### Completed
+- Enhanced `--dry-run` mode in `main.rs` to print ALL resolved config settings:
+  - Added `prompt.file` and `prompt.prepend_commands` (were missing)
+  - Added `metrics.extract.rules` with per-rule detail (kind, pattern, source, count, first_match)
+  - Added `metrics.targets.rules` with per-rule detail (kind, compare, threshold, direction, label)
+  - Added `metrics.targets.streak_threshold`
+- Added config validation: extraction rule regexes are compiled during dry-run
+  - Invalid regex patterns cause exit(1) with clear error message
+  - Validation runs before printing config, so invalid configs fail fast
+- All 340 tests pass, clippy clean, fmt applied
+
+### Current State
+- `blacksmith --dry-run` now prints complete resolved config and exits 0 on valid config
+- Invalid extraction rule regexes cause exit 1 with descriptive error
+- Pre-existing dead_code warnings remain for functions consumed by future features
+
+### Suggested Next Tasks
+- Implement --quiet mode for minimal output (r43) — P3, ready
+- Implement config validation with helpful error messages (edb) — P3, ready
+- Implement metrics migrate command for V1 data import (j1w) — P3, ready

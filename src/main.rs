@@ -336,6 +336,21 @@ async fn main() {
     tracing::debug!(?config, "resolved configuration");
 
     if cli.dry_run {
+        // Validate extraction rule regexes before printing
+        let mut validation_errors = Vec::new();
+        for (i, rule) in config.metrics.extract.rules.iter().enumerate() {
+            if let Err(e) = rule.compile() {
+                validation_errors.push(format!("  metrics.extract.rules[{}]: {}", i, e));
+            }
+        }
+        if !validation_errors.is_empty() {
+            eprintln!("Configuration validation failed:");
+            for err in &validation_errors {
+                eprintln!("{err}");
+            }
+            std::process::exit(1);
+        }
+
         println!("blacksmith v{}", env!("CARGO_PKG_VERSION"));
         println!("Config file: {}", cli.config.display());
         println!();
@@ -398,6 +413,14 @@ async fn main() {
         println!("  hooks.pre_session = {:?}", config.hooks.pre_session);
         println!("  hooks.post_session = {:?}", config.hooks.post_session);
         println!(
+            "  prompt.file = {:?}",
+            config.prompt.file.as_ref().map(|p| p.display().to_string())
+        );
+        println!(
+            "  prompt.prepend_commands = {:?}",
+            config.prompt.prepend_commands
+        );
+        println!(
             "  output.event_log = {:?}",
             config
                 .output
@@ -408,6 +431,38 @@ async fn main() {
         println!(
             "  commit_detection.patterns = {:?}",
             config.commit_detection.patterns
+        );
+        if config.metrics.extract.rules.is_empty() {
+            println!("  metrics.extract.rules = (none)");
+        } else {
+            println!(
+                "  metrics.extract.rules = ({} rules)",
+                config.metrics.extract.rules.len()
+            );
+            for (i, rule) in config.metrics.extract.rules.iter().enumerate() {
+                println!(
+                    "    [{}] kind={:?} pattern={:?} source={:?} count={} first_match={}",
+                    i, rule.kind, rule.pattern, rule.source, rule.count, rule.first_match
+                );
+            }
+        }
+        if config.metrics.targets.rules.is_empty() {
+            println!("  metrics.targets.rules = (none)");
+        } else {
+            println!(
+                "  metrics.targets.rules = ({} rules)",
+                config.metrics.targets.rules.len()
+            );
+            for (i, rule) in config.metrics.targets.rules.iter().enumerate() {
+                println!(
+                    "    [{}] kind={:?} compare={:?} threshold={} direction={:?} label={:?}",
+                    i, rule.kind, rule.compare, rule.threshold, rule.direction, rule.label
+                );
+            }
+        }
+        println!(
+            "  metrics.targets.streak_threshold = {}",
+            config.metrics.targets.streak_threshold
         );
         println!();
         println!("Dry run mode — config validated, not running.");
