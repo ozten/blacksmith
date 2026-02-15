@@ -1,25 +1,30 @@
-## Last Session: Define AgentAdapter trait and extract Claude adapter (wi2)
+## Last Session: Add adapter config field and auto-detection from command name (6hk)
 
 ### Completed
-- Created src/adapters/mod.rs with:
-  - AgentAdapter trait: name(), extract_builtin_metrics(), supported_metrics(), lines_for_source()
-  - ExtractionSource enum: ToolCommands, Text, Raw
-  - AdapterError type: Io, Parse variants with Display/Error/From impls
-- Created src/adapters/claude.rs with ClaudeAdapter implementing AgentAdapter:
-  - Extracts Claude JSONL parsing logic (previously duplicated from ingest.rs)
-  - Supports all 11 built-in metrics: turns.total, turns.narration_only, turns.parallel, turns.tool_calls, cost.input_tokens, cost.output_tokens, cost.cache_read_tokens, cost.cache_creation_tokens, cost.estimate_usd, session.output_bytes, session.duration_ms
-  - lines_for_source maps: ToolCommands→input.command, Text→text blocks, Raw→raw lines
-- Added `mod adapters` to main.rs
-- 15 new tests covering all adapter methods
-- All 416 tests pass, clippy clean, fmt clean
+- Added `adapter: Option<String>` field to `AgentConfig` in src/config.rs
+  - Defaults to None (auto-detect from command name)
+  - Deserializes from TOML `[agent] adapter = "..."` config
+- Created src/adapters/raw.rs with `RawAdapter` implementing AgentAdapter:
+  - Returns no built-in metrics (configurable rules only)
+  - All source types return raw file lines unchanged
+  - 5 tests for the raw adapter
+- Added adapter registry/factory functions to src/adapters/mod.rs:
+  - `detect_adapter_name(command)` — matches command basename against known agents, falls back to "raw"
+  - `resolve_adapter_name(explicit, command)` — uses explicit override if provided, else auto-detects
+  - `create_adapter(name)` — factory returning boxed AgentAdapter trait object
+  - Known adapters: claude, codex, opencode, aider; unknown falls back to raw
+  - 18 tests covering detection, resolution, creation, and config integration
+- Added 3 config tests for adapter field parsing
+- Updated all AgentConfig struct literals in session.rs and runner.rs to include adapter: None
+- All 442 tests pass, clippy clean, fmt clean
 
 ### Current State
-- The adapters module exists but is not yet wired into the ingest pipeline (that's bead 9jw)
-- The existing ingest.rs code is unchanged — downstream bead 9jw will replace it with adapter calls
-- Dead code warnings on adapters module are expected until wiring happens
+- The adapter config and detection pipeline is complete
+- `create_adapter` currently returns ClaudeAdapter for "claude" and RawAdapter for everything else
+- Future adapter implementations (codex, opencode, aider) will be added to the match in create_adapter
+- Dead code warnings on adapters module are expected until wiring happens (bead 9jw)
 
 ### Suggested Next Tasks
-- **9jw**: Wire adapter into ingest pipeline replacing hardcoded parsing (blocked on wi2, now unblocked)
-- **6hk**: Add adapter config field and auto-detection from command name (blocked on wi2, now unblocked)
+- **9jw**: Wire adapter into ingest pipeline replacing hardcoded parsing (now unblocked)
 - **zl7**: Add coordinator SQLite tables for multi-agent state (independent P1)
 - **mjx**: Implement affected set parsing and glob overlap detection (independent P1)

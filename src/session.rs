@@ -191,6 +191,7 @@ mod tests {
                 "{prompt}".to_string(),
                 "--verbose".to_string(),
             ],
+            adapter: None,
         };
         let args = build_args(&agent, "hello world");
         assert_eq!(args, vec!["-p", "hello world", "--verbose"]);
@@ -201,6 +202,7 @@ mod tests {
         let agent = AgentConfig {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
+            adapter: None,
         };
         let args = build_args(&agent, "anything");
         assert_eq!(args, vec!["hello"]);
@@ -215,6 +217,7 @@ mod tests {
                 "mid".to_string(),
                 "{prompt}".to_string(),
             ],
+            adapter: None,
         };
         let args = build_args(&agent, "X");
         assert_eq!(args, vec!["X", "mid", "X"]);
@@ -228,6 +231,7 @@ mod tests {
         let agent = AgentConfig {
             command: "echo".to_string(),
             args: vec!["hello".to_string(), "{prompt}".to_string()],
+            adapter: None,
         };
 
         let result = run_session(&agent, &output_path, "world").await.unwrap();
@@ -253,6 +257,7 @@ mod tests {
                 "-c".to_string(),
                 "echo stdout-line; echo stderr-line >&2".to_string(),
             ],
+            adapter: None,
         };
 
         let result = run_session(&agent, &output_path, "unused").await.unwrap();
@@ -271,6 +276,7 @@ mod tests {
         let agent = AgentConfig {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), "exit 42".to_string()],
+            adapter: None,
         };
 
         let result = run_session(&agent, &output_path, "unused").await.unwrap();
@@ -285,6 +291,7 @@ mod tests {
         let agent = AgentConfig {
             command: "nonexistent-binary-xyz".to_string(),
             args: vec![],
+            adapter: None,
         };
 
         let err = run_session(&agent, &output_path, "unused")
@@ -303,6 +310,7 @@ mod tests {
         let agent = AgentConfig {
             command: "printf".to_string(),
             args: vec!["ABCDE".to_string()],
+            adapter: None,
         };
 
         let result = run_session(&agent, &output_path, "unused").await.unwrap();
@@ -317,6 +325,7 @@ mod tests {
         let agent = AgentConfig {
             command: "sleep".to_string(),
             args: vec!["0.1".to_string()],
+            adapter: None,
         };
 
         let result = run_session(&agent, &output_path, "unused").await.unwrap();
@@ -331,6 +340,7 @@ mod tests {
         let agent = AgentConfig {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
+            adapter: None,
         };
 
         let err = run_session(

@@ -147,6 +147,9 @@ pub struct SessionConfig {
 pub struct AgentConfig {
     pub command: String,
     pub args: Vec<String>,
+    /// Which adapter to use for parsing session output.
+    /// If omitted, auto-detected from command name.
+    pub adapter: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -528,6 +531,7 @@ impl Default for AgentConfig {
                 "--output-format".to_string(),
                 "stream-json".to_string(),
             ],
+            adapter: None,
         }
     }
 }
@@ -1204,6 +1208,47 @@ data_dir = ".my-data"
             errors.len(),
             errors
         );
+    }
+
+    #[test]
+    fn test_default_agent_adapter_is_none() {
+        let config = HarnessConfig::default();
+        assert!(config.agent.adapter.is_none());
+    }
+
+    #[test]
+    fn test_load_agent_adapter_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+command = "my-agent"
+args = ["--flag"]
+adapter = "raw"
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.agent.adapter, Some("raw".to_string()));
+    }
+
+    #[test]
+    fn test_load_agent_without_adapter_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+command = "claude"
+args = ["-p", "{prompt}"]
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert!(config.agent.adapter.is_none());
     }
 
     #[test]

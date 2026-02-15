@@ -740,6 +740,7 @@ mod tests {
             agent: AgentConfig {
                 command: command.to_string(),
                 args,
+                adapter: None,
             },
             watchdog: WatchdogConfig {
                 check_interval_secs: 60,
