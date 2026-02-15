@@ -8,6 +8,7 @@ mod cycle_detect;
 mod data_dir;
 mod db;
 mod estimation;
+mod file_resolution;
 mod gc;
 mod hooks;
 mod import_graph;

@@ -2163,3 +2163,28 @@
 ### Suggested Next Tasks
 - simple-agent-harness-0lk (P1): Add file resolution data model and cache (Layer 2, depends on intent analysis)
 - simple-agent-harness-90v (P2): Implement ensure_fresh_metadata for scheduler integration (now unblocked by d42)
+
+--- 2026-02-15 21:50:15 | simple-agent-harness-0lk ---
+## Last Session: File Resolution Data Model and Cache (2026-02-15)
+
+### What Was Done
+- Created src/file_resolution.rs implementing Layer 2 (File Resolution) data model and cache
+- FileResolutionMapping struct: concept -> resolved_files + resolved_modules
+- FileResolution struct: task_id, base_commit, intent_hash, mappings, derived fields
+- DerivedFields struct: affected_modules, blast_radius, boundary_signatures
+- DB table `file_resolutions` with UNIQUE(task_id, base_commit, intent_hash) constraint
+- Indexes on (task_id, base_commit) and (base_commit) for efficient lookups
+- Cache functions: get() (by full key triple), get_latest_for_task(), store(), invalidate_stale(), is_fresh()
+- invalidate_stale() deletes entries with non-matching base_commit for lazy regeneration
+- Registered module in src/main.rs
+- 14 tests covering: store/retrieve, cache miss, different commit/intent misses, upsert, get_latest_for_task, invalidation, freshness checks, empty data, multiple tasks same commit
+- Bead simple-agent-harness-0lk closed
+
+### Current State
+- All tests pass (except coordinator test which is a pre-existing known slow test)
+- Clippy clean (only expected dead_code warnings for not-yet-integrated modules)
+- fmt clean
+
+### Suggested Next Tasks
+- simple-agent-harness-ikw (P1): Implement file resolution from intent concepts (now unblocked)
+- simple-agent-harness-ldy (P2): Add integration loop iteration tracking
