@@ -27,7 +27,28 @@ pub fn open_or_create(path: &Path) -> Result<Connection> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_improvements_status ON improvements(status);
-        CREATE INDEX IF NOT EXISTS idx_improvements_category ON improvements(category);",
+        CREATE INDEX IF NOT EXISTS idx_improvements_category ON improvements(category);
+
+        CREATE TABLE IF NOT EXISTS events (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            session   INTEGER NOT NULL,
+            kind      TEXT NOT NULL,
+            value     TEXT,
+            tags      TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_events_session ON events(session);
+        CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+        CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+
+        CREATE TABLE IF NOT EXISTS observations (
+            session   INTEGER PRIMARY KEY,
+            ts        TEXT NOT NULL,
+            duration  INTEGER,
+            outcome   TEXT,
+            data      TEXT NOT NULL
+        );",
     )?;
 
     Ok(conn)
@@ -132,6 +153,146 @@ pub fn list_improvements(
 /// Count total improvements (all statuses).
 pub fn count_improvements(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM improvements", [], |row| row.get(0))
+}
+
+// ── Events ──────────────────────────────────────────────────────────────
+
+/// A row from the events table.
+#[derive(Debug)]
+pub struct Event {
+    pub id: i64,
+    pub ts: String,
+    pub session: i64,
+    pub kind: String,
+    pub value: Option<String>,
+    pub tags: Option<String>,
+}
+
+/// Insert a single event into the events table.
+/// Returns the rowid of the inserted event.
+pub fn insert_event(
+    conn: &Connection,
+    session: i64,
+    kind: &str,
+    value: Option<&str>,
+    tags: Option<&str>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO events (session, kind, value, tags) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![session, kind, value, tags],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Insert a single event with an explicit timestamp.
+/// Returns the rowid of the inserted event.
+pub fn insert_event_with_ts(
+    conn: &Connection,
+    ts: &str,
+    session: i64,
+    kind: &str,
+    value: Option<&str>,
+    tags: Option<&str>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO events (ts, session, kind, value, tags) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![ts, session, kind, value, tags],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Query events for a specific session, ordered by id.
+pub fn events_by_session(conn: &Connection, session: i64) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, ts, session, kind, value, tags FROM events WHERE session = ?1 ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![session], map_event)?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Query events by kind, ordered by id.
+pub fn events_by_kind(conn: &Connection, kind: &str) -> Result<Vec<Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, ts, session, kind, value, tags FROM events WHERE kind = ?1 ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![kind], map_event)?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn map_event(row: &rusqlite::Row) -> Result<Event> {
+    Ok(Event {
+        id: row.get(0)?,
+        ts: row.get(1)?,
+        session: row.get(2)?,
+        kind: row.get(3)?,
+        value: row.get(4)?,
+        tags: row.get(5)?,
+    })
+}
+
+// ── Observations ────────────────────────────────────────────────────────
+
+/// A row from the observations table (per-session materialized summary).
+#[derive(Debug)]
+pub struct Observation {
+    pub session: i64,
+    pub ts: String,
+    pub duration: Option<i64>,
+    pub outcome: Option<String>,
+    pub data: String,
+}
+
+/// Insert or replace an observation for a session.
+pub fn upsert_observation(
+    conn: &Connection,
+    session: i64,
+    ts: &str,
+    duration: Option<i64>,
+    outcome: Option<&str>,
+    data: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO observations (session, ts, duration, outcome, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![session, ts, duration, outcome, data],
+    )?;
+    Ok(())
+}
+
+/// Get the observation for a specific session.
+pub fn get_observation(conn: &Connection, session: i64) -> Result<Option<Observation>> {
+    let mut stmt = conn.prepare(
+        "SELECT session, ts, duration, outcome, data FROM observations WHERE session = ?1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![session], map_observation)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
+/// List recent observations, ordered by session descending, limited to `limit` rows.
+pub fn recent_observations(conn: &Connection, limit: i64) -> Result<Vec<Observation>> {
+    let mut stmt = conn.prepare(
+        "SELECT session, ts, duration, outcome, data FROM observations ORDER BY session DESC LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![limit], map_observation)?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn map_observation(row: &rusqlite::Row) -> Result<Observation> {
+    Ok(Observation {
+        session: row.get(0)?,
+        ts: row.get(1)?,
+        duration: row.get(2)?,
+        outcome: row.get(3)?,
+        data: row.get(4)?,
+    })
 }
 
 fn map_improvement(row: &rusqlite::Row) -> Result<Improvement> {
@@ -424,5 +585,323 @@ mod tests {
                 .unwrap();
             assert_eq!(title, "Persisted");
         }
+    }
+
+    // ── Events table tests ──────────────────────────────────────────────
+
+    #[test]
+    fn events_table_exists() {
+        let (_dir, conn) = test_db();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn insert_event_basic() {
+        let (_dir, conn) = test_db();
+        let id = insert_event(&conn, 1, "turns.total", Some("67"), None).unwrap();
+        assert!(id > 0);
+
+        let events = events_by_session(&conn, 1).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session, 1);
+        assert_eq!(events[0].kind, "turns.total");
+        assert_eq!(events[0].value.as_deref(), Some("67"));
+        assert!(events[0].tags.is_none());
+    }
+
+    #[test]
+    fn insert_event_with_tags() {
+        let (_dir, conn) = test_db();
+        insert_event(&conn, 1, "commit.detected", Some("true"), Some("ci,deploy")).unwrap();
+
+        let events = events_by_session(&conn, 1).unwrap();
+        assert_eq!(events[0].tags.as_deref(), Some("ci,deploy"));
+    }
+
+    #[test]
+    fn insert_event_null_value() {
+        let (_dir, conn) = test_db();
+        insert_event(&conn, 1, "session.start", None, None).unwrap();
+
+        let events = events_by_session(&conn, 1).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].value.is_none());
+    }
+
+    #[test]
+    fn events_timestamp_auto_set() {
+        let (_dir, conn) = test_db();
+        insert_event(&conn, 1, "session.start", None, None).unwrap();
+
+        let events = events_by_session(&conn, 1).unwrap();
+        assert!(events[0].ts.contains('T'));
+        assert!(events[0].ts.ends_with('Z'));
+    }
+
+    #[test]
+    fn insert_event_with_explicit_ts() {
+        let (_dir, conn) = test_db();
+        let ts = "2026-01-15T10:30:00Z";
+        insert_event_with_ts(&conn, ts, 42, "turns.total", Some("55"), None).unwrap();
+
+        let events = events_by_session(&conn, 42).unwrap();
+        assert_eq!(events[0].ts, ts);
+    }
+
+    #[test]
+    fn multiple_events_per_session() {
+        let (_dir, conn) = test_db();
+        insert_event(&conn, 5, "turns.total", Some("67"), None).unwrap();
+        insert_event(&conn, 5, "cost.estimate_usd", Some("24.57"), None).unwrap();
+        insert_event(&conn, 5, "session.outcome", Some("\"completed\""), None).unwrap();
+
+        let events = events_by_session(&conn, 5).unwrap();
+        assert_eq!(events.len(), 3);
+        // Should be ordered by id (insertion order)
+        assert_eq!(events[0].kind, "turns.total");
+        assert_eq!(events[1].kind, "cost.estimate_usd");
+        assert_eq!(events[2].kind, "session.outcome");
+    }
+
+    #[test]
+    fn events_by_kind_query() {
+        let (_dir, conn) = test_db();
+        insert_event(&conn, 1, "turns.total", Some("50"), None).unwrap();
+        insert_event(&conn, 2, "turns.total", Some("67"), None).unwrap();
+        insert_event(&conn, 2, "cost.estimate_usd", Some("20"), None).unwrap();
+        insert_event(&conn, 3, "turns.total", Some("80"), None).unwrap();
+
+        let turns = events_by_kind(&conn, "turns.total").unwrap();
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0].session, 1);
+        assert_eq!(turns[1].session, 2);
+        assert_eq!(turns[2].session, 3);
+    }
+
+    #[test]
+    fn events_session_index_works() {
+        let (_dir, conn) = test_db();
+        // Insert events across multiple sessions
+        for session in 1..=10 {
+            insert_event(&conn, session, "turns.total", Some("50"), None).unwrap();
+        }
+        // Query specific session — index should be used
+        let events = events_by_session(&conn, 5).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session, 5);
+    }
+
+    #[test]
+    fn events_empty_session_returns_empty() {
+        let (_dir, conn) = test_db();
+        let events = events_by_session(&conn, 999).unwrap();
+        assert!(events.is_empty());
+    }
+
+    // ── Observations table tests ────────────────────────────────────────
+
+    #[test]
+    fn observations_table_exists() {
+        let (_dir, conn) = test_db();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn upsert_observation_insert() {
+        let (_dir, conn) = test_db();
+        let data = r#"{"turns.total": 67, "cost.estimate_usd": 24.57}"#;
+        upsert_observation(
+            &conn,
+            1,
+            "2026-01-15T10:30:00Z",
+            Some(1847),
+            Some("completed"),
+            data,
+        )
+        .unwrap();
+
+        let obs = get_observation(&conn, 1).unwrap().unwrap();
+        assert_eq!(obs.session, 1);
+        assert_eq!(obs.ts, "2026-01-15T10:30:00Z");
+        assert_eq!(obs.duration, Some(1847));
+        assert_eq!(obs.outcome.as_deref(), Some("completed"));
+        assert_eq!(obs.data, data);
+    }
+
+    #[test]
+    fn upsert_observation_replaces() {
+        let (_dir, conn) = test_db();
+        let data1 = r#"{"turns.total": 50}"#;
+        let data2 = r#"{"turns.total": 67, "cost.estimate_usd": 24.57}"#;
+
+        upsert_observation(
+            &conn,
+            1,
+            "2026-01-15T10:30:00Z",
+            Some(1000),
+            Some("failed"),
+            data1,
+        )
+        .unwrap();
+        upsert_observation(
+            &conn,
+            1,
+            "2026-01-15T10:30:00Z",
+            Some(1847),
+            Some("completed"),
+            data2,
+        )
+        .unwrap();
+
+        let obs = get_observation(&conn, 1).unwrap().unwrap();
+        assert_eq!(obs.duration, Some(1847));
+        assert_eq!(obs.outcome.as_deref(), Some("completed"));
+        assert_eq!(obs.data, data2);
+
+        // Should still be just one row
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn observation_nullable_fields() {
+        let (_dir, conn) = test_db();
+        upsert_observation(&conn, 1, "2026-01-15T10:30:00Z", None, None, "{}").unwrap();
+
+        let obs = get_observation(&conn, 1).unwrap().unwrap();
+        assert!(obs.duration.is_none());
+        assert!(obs.outcome.is_none());
+    }
+
+    #[test]
+    fn get_observation_nonexistent() {
+        let (_dir, conn) = test_db();
+        let obs = get_observation(&conn, 999).unwrap();
+        assert!(obs.is_none());
+    }
+
+    #[test]
+    fn recent_observations_ordering() {
+        let (_dir, conn) = test_db();
+        for session in 1..=5 {
+            let data = format!(r#"{{"session": {session}}}"#);
+            upsert_observation(
+                &conn,
+                session,
+                "2026-01-15T10:30:00Z",
+                Some(1000),
+                Some("completed"),
+                &data,
+            )
+            .unwrap();
+        }
+
+        let recent = recent_observations(&conn, 3).unwrap();
+        assert_eq!(recent.len(), 3);
+        // Should be descending by session
+        assert_eq!(recent[0].session, 5);
+        assert_eq!(recent[1].session, 4);
+        assert_eq!(recent[2].session, 3);
+    }
+
+    #[test]
+    fn recent_observations_limit() {
+        let (_dir, conn) = test_db();
+        for session in 1..=10 {
+            upsert_observation(&conn, session, "2026-01-15T10:30:00Z", None, None, "{}").unwrap();
+        }
+
+        let recent = recent_observations(&conn, 5).unwrap();
+        assert_eq!(recent.len(), 5);
+    }
+
+    #[test]
+    fn observations_session_is_primary_key() {
+        let (_dir, conn) = test_db();
+        // Insert two different sessions — both should succeed
+        upsert_observation(&conn, 1, "2026-01-15T10:30:00Z", None, None, "{}").unwrap();
+        upsert_observation(&conn, 2, "2026-01-15T11:30:00Z", None, None, "{}").unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn events_and_observations_coexist() {
+        let (_dir, conn) = test_db();
+
+        // Insert events for session 1
+        insert_event(&conn, 1, "turns.total", Some("67"), None).unwrap();
+        insert_event(&conn, 1, "cost.estimate_usd", Some("24.57"), None).unwrap();
+
+        // Insert observation for session 1
+        let data = r#"{"turns.total": 67, "cost.estimate_usd": 24.57}"#;
+        upsert_observation(
+            &conn,
+            1,
+            "2026-01-15T10:30:00Z",
+            Some(1847),
+            Some("completed"),
+            data,
+        )
+        .unwrap();
+
+        // Both should be queryable
+        let events = events_by_session(&conn, 1).unwrap();
+        assert_eq!(events.len(), 2);
+
+        let obs = get_observation(&conn, 1).unwrap().unwrap();
+        assert_eq!(obs.data, data);
+    }
+
+    #[test]
+    fn all_three_tables_created() {
+        let (_dir, conn) = test_db();
+
+        // Verify all three tables exist
+        let tables: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+        };
+
+        assert!(tables.contains(&"improvements".to_string()));
+        assert!(tables.contains(&"events".to_string()));
+        assert!(tables.contains(&"observations".to_string()));
+    }
+
+    #[test]
+    fn events_indexes_created() {
+        let (_dir, conn) = test_db();
+
+        let indexes: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='events' ORDER BY name",
+                )
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+        };
+
+        assert!(indexes.contains(&"idx_events_session".to_string()));
+        assert!(indexes.contains(&"idx_events_kind".to_string()));
+        assert!(indexes.contains(&"idx_events_ts".to_string()));
     }
 }
