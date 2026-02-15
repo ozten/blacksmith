@@ -10,8 +10,9 @@ use std::path::Path;
 pub fn handle_brief(
     db_path: &Path,
     targets_config: Option<&MetricsTargetsConfig>,
+    supported_metrics: Option<&[&str]>,
 ) -> Result<(), String> {
-    let text = generate_brief(db_path, targets_config)?;
+    let text = generate_brief(db_path, targets_config, supported_metrics)?;
     if !text.is_empty() {
         print!("{text}");
     }
@@ -29,6 +30,7 @@ pub fn handle_brief(
 pub fn generate_brief(
     db_path: &Path,
     targets_config: Option<&MetricsTargetsConfig>,
+    supported_metrics: Option<&[&str]>,
 ) -> Result<String, String> {
     // If no database file exists, silently produce no output
     if !db_path.exists() {
@@ -59,7 +61,12 @@ pub fn generate_brief(
                 .map_err(|e| format!("Failed to query observations for targets: {e}"))?;
 
             if !recent.is_empty() {
-                let warnings = format_target_warnings(&config.rules, &recent, streak_threshold);
+                let warnings = format_target_warnings(
+                    &config.rules,
+                    &recent,
+                    streak_threshold,
+                    supported_metrics,
+                );
                 if !warnings.is_empty() {
                     if !output.is_empty() {
                         output.push_str("\n\n");
@@ -164,10 +171,30 @@ fn format_threshold(rule: &TargetRule) -> String {
 /// Checks each target rule against the most recent observation. For misses,
 /// also counts the consecutive miss streak (working backwards through history).
 /// If the streak >= streak_threshold, the warning is escalated to an ALERT.
+/// Check if a target rule's metrics are supported by the current adapter.
+/// Returns true if supported_metrics is None (no filtering) or if the rule's
+/// kind (and relative_to for pct_of) are in the supported list.
+fn is_rule_supported(rule: &TargetRule, supported_metrics: Option<&[&str]>) -> bool {
+    let supported = match supported_metrics {
+        Some(s) => s,
+        None => return true,
+    };
+    if !supported.contains(&rule.kind.as_str()) {
+        return false;
+    }
+    if let Some(ref rel) = rule.relative_to {
+        if !supported.contains(&rel.as_str()) {
+            return false;
+        }
+    }
+    true
+}
+
 fn format_target_warnings(
     rules: &[TargetRule],
     observations: &[db::Observation],
     streak_threshold: u32,
+    supported_metrics: Option<&[&str]>,
 ) -> String {
     if observations.is_empty() {
         return String::new();
@@ -183,6 +210,11 @@ fn format_target_warnings(
     let mut lines: Vec<String> = Vec::new();
 
     for rule in rules {
+        // Skip rules for metrics the current adapter doesn't support
+        if !is_rule_supported(rule, supported_metrics) {
+            continue;
+        }
+
         // Check most recent observation
         let most_recent = &data_values[0];
         if let Some(actual) = evaluate_single_observation(rule, most_recent) {
@@ -283,14 +315,14 @@ mod tests {
     fn brief_no_database_file_produces_no_output() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("nonexistent.db");
-        handle_brief(&path, None).unwrap();
+        handle_brief(&path, None, None).unwrap();
     }
 
     #[test]
     fn brief_empty_database_produces_no_output() {
         let (_dir, path) = test_db_path();
         db::open_or_create(&path).unwrap();
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.is_empty());
     }
 
@@ -311,7 +343,7 @@ mod tests {
         .unwrap();
 
         drop(conn);
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.contains("## OPEN IMPROVEMENTS (2 of 2)"));
         assert!(text.contains("R1 [workflow] Batch file reads"));
         assert!(text.contains("R2 [cost] Skip full test suite for CSS"));
@@ -330,7 +362,7 @@ mod tests {
         .unwrap();
 
         drop(conn);
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.contains("## OPEN IMPROVEMENTS (1 of 2)"));
         assert!(text.contains("R1 [workflow] Open item"));
         assert!(!text.contains("Promoted item"));
@@ -367,7 +399,7 @@ mod tests {
 
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.contains("## OPEN IMPROVEMENTS (2 of 3)"));
         assert!(text.contains("R1 [code-quality] Use ESLint --fix in pre-commit hook"));
     }
@@ -392,7 +424,7 @@ mod tests {
 
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.contains("## PERFORMANCE FEEDBACK (auto-generated)"));
         assert!(text.contains("Last session #42:"));
         assert!(text.contains("Turns: 67"));
@@ -414,7 +446,7 @@ mod tests {
 
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         // Should show session 2 (most recent)
         assert!(text.contains("Last session #2:"));
         assert!(text.contains("Turns: 80"));
@@ -431,7 +463,7 @@ mod tests {
 
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         // Both sections present
         assert!(text.contains("## PERFORMANCE FEEDBACK"));
         assert!(text.contains("## OPEN IMPROVEMENTS (1 of 1)"));
@@ -451,7 +483,7 @@ mod tests {
 
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.contains("## PERFORMANCE FEEDBACK"));
         assert!(!text.contains("## OPEN IMPROVEMENTS"));
     }
@@ -466,7 +498,7 @@ mod tests {
 
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.contains("Turns: 0"));
         assert!(text.contains("Narration-only turns: 0%"));
         assert!(text.contains("Parallel tool calls: 0%"));
@@ -482,7 +514,7 @@ mod tests {
 
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(text.contains("Duration: 45s"));
     }
 
@@ -564,7 +596,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(text.contains("## TARGET WARNINGS"));
         assert!(text.contains("WARNING: Avg cost $35.00 (target: <30.00)"));
         assert!(!text.contains("ALERT"));
@@ -594,7 +626,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(!text.contains("## TARGET WARNINGS"));
     }
 
@@ -624,7 +656,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(text
             .contains("ALERT: Avg cost $40.00 (target: <30.00) — missed 4 consecutive sessions"));
     }
@@ -672,7 +704,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         // Streak = 1 (only session 3 misses, session 2 passes breaks the streak)
         assert!(text.contains("WARNING: Avg cost"));
         assert!(!text.contains("ALERT"));
@@ -707,7 +739,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(text.contains("WARNING: Narration-only turns 25% (target: <20%)"));
     }
 
@@ -740,7 +772,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(text.contains("WARNING: Parallel tool calls 5% (target: >10%)"));
     }
 
@@ -773,7 +805,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(text.contains("WARNING: Avg cost"));
         assert!(!text.contains("Avg turns")); // passes, so no warning
     }
@@ -797,7 +829,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         let perf_pos = text.find("## PERFORMANCE FEEDBACK").unwrap();
         let warn_pos = text.find("## TARGET WARNINGS").unwrap();
         let imp_pos = text.find("## OPEN IMPROVEMENTS").unwrap();
@@ -825,7 +857,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(!text.contains("## TARGET WARNINGS"));
     }
 
@@ -844,7 +876,7 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let text = generate_brief(&path, None).unwrap();
+        let text = generate_brief(&path, None, None).unwrap();
         assert!(!text.contains("## TARGET WARNINGS"));
     }
 
@@ -939,7 +971,7 @@ mod tests {
             streak_threshold: 3,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(text
             .contains("ALERT: Avg cost $40.00 (target: <30.00) — missed 3 consecutive sessions"));
     }
@@ -972,7 +1004,143 @@ mod tests {
             streak_threshold: 2,
         };
 
-        let text = generate_brief(&path, Some(&config)).unwrap();
+        let text = generate_brief(&path, Some(&config), None).unwrap();
         assert!(text.contains("ALERT"));
+    }
+
+    // ── Metric degradation tests ──────────────────────────────────────
+
+    #[test]
+    fn target_warnings_skip_unsupported_metric() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-15T10:00:00Z",
+            None,
+            None,
+            r#"{"cost.estimate_usd": 35.0, "turns.total": 80}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let config = MetricsTargetsConfig {
+            rules: vec![
+                {
+                    let mut r = make_rule("cost.estimate_usd", "avg", 30.0, "below", "Avg cost");
+                    r.unit = Some("$".to_string());
+                    r
+                },
+                make_rule("turns.total", "avg", 90.0, "below", "Avg turns"),
+            ],
+            streak_threshold: 3,
+        };
+
+        // Only support turns.total, not cost.estimate_usd
+        let supported: &[&str] = &["turns.total"];
+        let text = generate_brief(&path, Some(&config), Some(supported)).unwrap();
+        // Cost target should be silently skipped — no warning about it
+        assert!(!text.contains("Avg cost"));
+        // Turns target should still appear (passes, so no warning)
+        assert!(!text.contains("WARNING"));
+    }
+
+    #[test]
+    fn target_warnings_skip_unsupported_relative_to_metric() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-15T10:00:00Z",
+            None,
+            None,
+            r#"{"turns.narration_only": 25, "turns.total": 100}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let config = MetricsTargetsConfig {
+            rules: vec![make_pct_of_rule(
+                "turns.narration_only",
+                "turns.total",
+                20.0,
+                "below",
+                "Narration-only turns",
+            )],
+            streak_threshold: 3,
+        };
+
+        // Support narration_only but NOT turns.total (used as relative_to)
+        let supported: &[&str] = &["turns.narration_only"];
+        let text = generate_brief(&path, Some(&config), Some(supported)).unwrap();
+        // Rule should be skipped because relative_to metric is unsupported
+        // No TARGET WARNINGS section should appear
+        assert!(!text.contains("TARGET WARNINGS"));
+    }
+
+    #[test]
+    fn target_warnings_none_supported_metrics_means_no_filtering() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-15T10:00:00Z",
+            None,
+            None,
+            r#"{"cost.estimate_usd": 35.0}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut rule = make_rule("cost.estimate_usd", "avg", 30.0, "below", "Avg cost");
+        rule.unit = Some("$".to_string());
+        let config = MetricsTargetsConfig {
+            rules: vec![rule],
+            streak_threshold: 3,
+        };
+
+        // None means no filtering — all metrics available
+        let text = generate_brief(&path, Some(&config), None).unwrap();
+        assert!(text.contains("WARNING: Avg cost"));
+    }
+
+    #[test]
+    fn is_rule_supported_tests() {
+        let rule = make_rule("cost.estimate_usd", "avg", 30.0, "below", "Cost");
+
+        // None supported_metrics means all supported
+        assert!(is_rule_supported(&rule, None));
+
+        // Kind in supported list
+        assert!(is_rule_supported(
+            &rule,
+            Some(&["cost.estimate_usd", "turns.total"])
+        ));
+
+        // Kind not in supported list
+        assert!(!is_rule_supported(&rule, Some(&["turns.total"])));
+
+        // pct_of rule: both kind and relative_to must be supported
+        let pct_rule = make_pct_of_rule(
+            "turns.narration_only",
+            "turns.total",
+            20.0,
+            "below",
+            "Narration",
+        );
+        assert!(is_rule_supported(
+            &pct_rule,
+            Some(&["turns.narration_only", "turns.total"])
+        ));
+        assert!(!is_rule_supported(
+            &pct_rule,
+            Some(&["turns.narration_only"])
+        ));
     }
 }

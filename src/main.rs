@@ -312,8 +312,14 @@ async fn main() {
         } else {
             Some(targets)
         };
+        let adapter_name = adapters::resolve_adapter_name(
+            config_for_brief.agent.adapter.as_deref(),
+            &config_for_brief.agent.command,
+        );
+        let adapter = adapters::create_adapter(adapter_name);
+        let supported = adapter.supported_metrics();
 
-        if let Err(e) = brief::handle_brief(&db_path, targets_opt) {
+        if let Err(e) = brief::handle_brief(&db_path, targets_opt, Some(supported)) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
@@ -418,7 +424,18 @@ async fn main() {
             MetricsAction::Log { file } => metrics_cmd::handle_log(&db_path, file),
             MetricsAction::Status { last } => metrics_cmd::handle_status(&db_path, *last),
             MetricsAction::Targets { last } => {
-                metrics_cmd::handle_targets(&db_path, *last, &config_for_metrics.metrics.targets)
+                let adapter_name = adapters::resolve_adapter_name(
+                    config_for_metrics.agent.adapter.as_deref(),
+                    &config_for_metrics.agent.command,
+                );
+                let adapter = adapters::create_adapter(adapter_name);
+                metrics_cmd::handle_targets(
+                    &db_path,
+                    *last,
+                    &config_for_metrics.metrics.targets,
+                    adapter_name,
+                    adapter.supported_metrics(),
+                )
             }
             MetricsAction::Migrate { from } => metrics_cmd::handle_migrate(&db_path, from),
             MetricsAction::Rebuild => metrics_cmd::handle_rebuild(&db_path),

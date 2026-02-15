@@ -1,34 +1,28 @@
-## Last Session: Implement blacksmith migrate --consolidate command (jkn)
+## Last Session: Implement graceful metric degradation for adapter limitations (ee2)
 
 ### Completed
-- Added `blacksmith migrate --consolidate` CLI subcommand for V2->V3 file migration
-- Created `src/migrate.rs` module with the consolidation logic:
-  1. Finds `blacksmith.db` / `harness.db` in old output directory → moves to `.blacksmith/blacksmith.db`
-  2. Finds `{output_prefix}-{N}.jsonl` files → moves to `.blacksmith/sessions/{N}.jsonl`
-  3. Moves legacy counter file → `.blacksmith/counter`
-  4. Moves legacy status file → `.blacksmith/status`
-  5. Prints per-file move/skip status and summary
-  6. Non-destructive: moves (rename or copy+delete), skips files that already exist at destination
-  7. Stops immediately on any failure
-- Added Migrate variant to Commands enum in main.rs with --consolidate flag
-- Added handler in main() that loads config, ensures data dir, calls migrate::consolidate()
-- Added 7 new unit tests (657 total passing):
-  - test_find_session_files_basic
-  - test_find_session_files_empty_dir
-  - test_find_session_files_custom_prefix
-  - test_move_file_same_filesystem
-  - test_consolidate_moves_session_files
-  - test_consolidate_moves_database
-  - test_consolidate_moves_harness_db
-  - test_consolidate_skips_existing_files
-  - test_consolidate_no_legacy_files
-  - test_consolidate_moves_status_file
+- Added graceful metric degradation when target rules reference metrics the current adapter doesn't support
+- In `brief.rs`: Added `supported_metrics` parameter to `handle_brief`, `generate_brief`, and `format_target_warnings`. Rules for unsupported metrics are silently skipped in the brief output
+- In `metrics_cmd.rs`: Added `adapter_name` and `supported_metrics` parameters to `handle_targets`. Unsupported metrics show as "N/A (not available from <adapter> adapter)" in the targets display. Summary line includes count of unavailable targets
+- In `main.rs`: Both the Brief and Metrics Targets handlers now resolve the adapter and pass supported metrics through
+- In `prompt.rs`: Updated `generate_brief` call to include new parameter (passes None since no targets config in prompt context)
+- Added helper functions `is_rule_supported` (brief.rs) and `is_metric_available` (metrics_cmd.rs) to check if a rule's metrics (including `relative_to` for pct_of rules) are supported
+- Added 7 new tests (664 total passing):
+  - brief: target_warnings_skip_unsupported_metric
+  - brief: target_warnings_skip_unsupported_relative_to_metric
+  - brief: target_warnings_none_supported_metrics_means_no_filtering
+  - brief: is_rule_supported_tests
+  - metrics_cmd: targets_unsupported_metric_shows_na
+  - metrics_cmd: targets_all_unsupported_shows_summary
+  - metrics_cmd: is_metric_available_tests
 
 ### Key Files Modified
-- `src/main.rs` — added `mod migrate`, `Migrate` subcommand, handler
-- `src/migrate.rs` — new module with consolidate(), find_session_files(), move_file(), tests
+- `src/brief.rs` — added supported_metrics filtering to brief generation
+- `src/metrics_cmd.rs` — added N/A display for unsupported targets
+- `src/main.rs` — threaded adapter info through Brief and Metrics Targets handlers
+- `src/prompt.rs` — updated generate_brief call signature
 
 ### Suggested Next Tasks
-- **ee2**: Implement graceful metric degradation for adapter limitations (P2)
 - **d2q**: Implement dynamic affected set expansion via .blacksmith-expand (P2)
 - **wdo**: Implement blacksmith workers status and kill commands (P2)
+- **3su**: Implement periodic reconciliation with full test suite (P2)

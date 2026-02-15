@@ -167,6 +167,8 @@ pub fn handle_targets(
     db_path: &Path,
     last: i64,
     targets_config: &MetricsTargetsConfig,
+    adapter_name: &str,
+    supported_metrics: &[&str],
 ) -> Result<(), String> {
     if targets_config.rules.is_empty() {
         println!("No target rules configured in [metrics.targets.rules].");
@@ -198,6 +200,7 @@ pub fn handle_targets(
     let session_count = data_values.len();
     let mut pass_count = 0;
     let mut total_rules = 0;
+    let mut na_count = 0;
 
     println!(
         "Targets (evaluated over last {} session{}):\n",
@@ -206,6 +209,16 @@ pub fn handle_targets(
     );
 
     for rule in &targets_config.rules {
+        // Check if the metric is supported by the current adapter
+        if !is_metric_available(rule, supported_metrics) {
+            na_count += 1;
+            println!(
+                "  {:<30} N/A (not available from {} adapter)",
+                rule.label, adapter_name
+            );
+            continue;
+        }
+
         total_rules += 1;
         let result = evaluate_target(rule, &data_values);
 
@@ -223,16 +236,37 @@ pub fn handle_targets(
     }
 
     println!();
-    if pass_count == total_rules {
-        println!("All {total_rules} target(s) met.");
+    if total_rules == 0 && na_count > 0 {
+        println!("No targets available for the {adapter_name} adapter ({na_count} skipped).");
+    } else if pass_count == total_rules {
+        if na_count > 0 {
+            println!("All {total_rules} target(s) met ({na_count} not available).");
+        } else {
+            println!("All {total_rules} target(s) met.");
+        }
     } else {
-        println!(
-            "{pass_count}/{total_rules} target(s) met, {} missed.",
-            total_rules - pass_count
-        );
+        let missed = total_rules - pass_count;
+        if na_count > 0 {
+            println!("{pass_count}/{total_rules} target(s) met, {missed} missed ({na_count} not available).");
+        } else {
+            println!("{pass_count}/{total_rules} target(s) met, {missed} missed.",);
+        }
     }
 
     Ok(())
+}
+
+/// Check if a target rule's metrics are supported by the adapter.
+fn is_metric_available(rule: &crate::config::TargetRule, supported_metrics: &[&str]) -> bool {
+    if !supported_metrics.contains(&rule.kind.as_str()) {
+        return false;
+    }
+    if let Some(ref rel) = rule.relative_to {
+        if !supported_metrics.contains(&rel.as_str()) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Handle the `metrics rebuild` subcommand.
@@ -970,6 +1004,22 @@ mod tests {
     use crate::db;
     use tempfile::TempDir;
 
+    /// All metrics supported by the Claude adapter, used in tests.
+    const ALL_METRICS: &[&str] = &[
+        "turns.total",
+        "turns.narration_only",
+        "turns.parallel",
+        "turns.tool_calls",
+        "cost.input_tokens",
+        "cost.output_tokens",
+        "cost.cache_read_tokens",
+        "cost.cache_creation_tokens",
+        "cost.estimate_usd",
+        "session.output_bytes",
+        "session.duration_ms",
+        "commit.detected",
+    ];
+
     fn test_db_path() -> (TempDir, std::path::PathBuf) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("blacksmith.db");
@@ -1161,7 +1211,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("blacksmith.db");
         let config = make_targets_config(vec![]);
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -1175,7 +1225,7 @@ mod tests {
             "below",
             "Avg turns",
         )]);
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -1189,7 +1239,7 @@ mod tests {
             "below",
             "Avg turns",
         )]);
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -1226,7 +1276,7 @@ mod tests {
             "Avg turns",
         )]);
         // Should not error (pass case)
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -1262,7 +1312,7 @@ mod tests {
             "below",
             "Avg turns",
         )]);
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -1289,7 +1339,7 @@ mod tests {
             "below",
             "Narration-only turns",
         )]);
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -1339,7 +1389,7 @@ mod tests {
             r.unit = Some("%".to_string());
             r
         }]);
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -1375,7 +1425,7 @@ mod tests {
                 r
             }, // avg 17.50 < 30 → OK
         ]);
-        handle_targets(&path, 10, &config).unwrap();
+        handle_targets(&path, 10, &config, "claude", ALL_METRICS).unwrap();
     }
 
     #[test]
@@ -2239,5 +2289,88 @@ label = "Avg turns per session"
         drop(conn);
 
         handle_events(&path, Some(999)).unwrap();
+    }
+
+    // ── Metric degradation tests ────────────────────────────────────
+
+    #[test]
+    fn targets_unsupported_metric_shows_na() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-15T10:00:00Z",
+            None,
+            None,
+            r#"{"turns.total": 50}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let config = make_targets_config(vec![
+            make_rule("turns.total", "avg", 80.0, "below", "Avg turns"),
+            {
+                let mut r = make_rule("cost.estimate_usd", "avg", 30.0, "below", "Avg cost");
+                r.unit = Some("$".to_string());
+                r
+            },
+        ]);
+
+        // Only support turns.total — cost should show N/A
+        let limited_metrics: &[&str] = &["turns.total"];
+        handle_targets(&path, 10, &config, "codex", limited_metrics).unwrap();
+    }
+
+    #[test]
+    fn targets_all_unsupported_shows_summary() {
+        let (_dir, path) = test_db_path();
+        let conn = db::open_or_create(&path).unwrap();
+
+        db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-15T10:00:00Z",
+            None,
+            None,
+            r#"{"turns.total": 50}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let config = make_targets_config(vec![{
+            let mut r = make_rule("cost.estimate_usd", "avg", 30.0, "below", "Avg cost");
+            r.unit = Some("$".to_string());
+            r
+        }]);
+
+        // No metrics supported
+        let no_metrics: &[&str] = &[];
+        handle_targets(&path, 10, &config, "codex", no_metrics).unwrap();
+    }
+
+    #[test]
+    fn is_metric_available_tests() {
+        let rule = make_rule("cost.estimate_usd", "avg", 30.0, "below", "Cost");
+
+        assert!(is_metric_available(
+            &rule,
+            &["cost.estimate_usd", "turns.total"]
+        ));
+        assert!(!is_metric_available(&rule, &["turns.total"]));
+
+        let pct_rule = make_pct_of_rule(
+            "turns.narration_only",
+            "turns.total",
+            20.0,
+            "below",
+            "Narration",
+        );
+        assert!(is_metric_available(
+            &pct_rule,
+            &["turns.narration_only", "turns.total"]
+        ));
+        assert!(!is_metric_available(&pct_rule, &["turns.narration_only"]));
     }
 }

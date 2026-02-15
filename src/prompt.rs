@@ -103,7 +103,7 @@ pub fn assemble(
     }
 
     // 2. Generate brief from blacksmith.db (silently skipped if no DB or no improvements)
-    match brief::generate_brief(db_path, None) {
+    match brief::generate_brief(db_path, None, None) {
         Ok(text) if !text.is_empty() => {
             tracing::debug!(bytes = text.len(), "brief injected into prompt");
             prefix_parts.push(text);
