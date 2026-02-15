@@ -7,6 +7,7 @@
 //! Parallel estimate: critical_path through dependency DAG, clamped by serial_time / N workers,
 //! plus integration overhead.
 
+use crate::cycle_detect;
 use crate::db::{self, BeadMetrics};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -117,24 +118,41 @@ fn compute_avg_integration_time(completed: &[BeadMetrics]) -> Option<f64> {
 ///
 /// Returns (critical_path_time_secs, critical_path_len, cycled_bead_ids).
 ///
-/// Cycled beads are excluded from the DAG before computing the critical path.
+/// Uses `cycle_detect::detect_cycles()` to identify cycled beads, filters them
+/// out of the DAG, then computes the critical path on the remaining acyclic graph.
 /// Each bead on the path is assumed to take `avg_time` seconds.
 fn compute_critical_path(open_beads: &[BeadNode], avg_time: f64) -> (f64, usize, Vec<String>) {
     if open_beads.is_empty() {
         return (0.0, 0, Vec::new());
     }
 
-    let open_ids: HashSet<&str> = open_beads.iter().map(|b| b.id.as_str()).collect();
+    // Use cycle_detect module to identify cycled bead IDs
+    let cycles = cycle_detect::detect_cycles(open_beads);
+    let cycled_ids: HashSet<String> = cycles.into_iter().flatten().collect();
+    let mut cycled_beads: Vec<String> = cycled_ids.iter().cloned().collect();
+    cycled_beads.sort();
 
-    // Build adjacency list: for each bead, store its dependencies (edges: dep -> bead)
-    // We only consider edges within the open set.
+    // Filter out cycled beads to get a clean DAG
+    let dag_beads: Vec<&BeadNode> = open_beads
+        .iter()
+        .filter(|b| !cycled_ids.contains(&b.id))
+        .collect();
+
+    if dag_beads.is_empty() {
+        // All beads are in cycles
+        return (0.0, 0, cycled_beads);
+    }
+
+    let dag_ids: HashSet<&str> = dag_beads.iter().map(|b| b.id.as_str()).collect();
+
+    // Build adjacency list: dep -> dependents (edges within the DAG)
     let mut in_degree: HashMap<&str, usize> = HashMap::new();
     let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
 
-    for bead in open_beads {
+    for bead in &dag_beads {
         in_degree.entry(bead.id.as_str()).or_insert(0);
         for dep in &bead.depends_on {
-            if open_ids.contains(dep.as_str()) {
+            if dag_ids.contains(dep.as_str()) {
                 *in_degree.entry(bead.id.as_str()).or_insert(0) += 1;
                 dependents
                     .entry(dep.as_str())
@@ -144,7 +162,7 @@ fn compute_critical_path(open_beads: &[BeadNode], avg_time: f64) -> (f64, usize,
         }
     }
 
-    // Phase 1: Kahn's algorithm to detect cycles
+    // Topological sort via Kahn's algorithm (graph is guaranteed acyclic after filtering)
     let mut queue: VecDeque<&str> = in_degree
         .iter()
         .filter(|(_, &deg)| deg == 0)
@@ -168,20 +186,7 @@ fn compute_critical_path(open_beads: &[BeadNode], avg_time: f64) -> (f64, usize,
         }
     }
 
-    // Nodes not in topo_order are in cycles
-    let topo_set: HashSet<&str> = topo_order.iter().copied().collect();
-    let cycled_beads: Vec<String> = open_ids
-        .iter()
-        .filter(|id| !topo_set.contains(**id))
-        .map(|id| id.to_string())
-        .collect();
-
-    if topo_order.is_empty() {
-        // All beads are in cycles
-        return (0.0, 0, cycled_beads);
-    }
-
-    // Phase 2: Longest path in DAG (critical path)
+    // Longest path in DAG (critical path)
     // dist[node] = longest path ending at node (in number of beads)
     let mut dist: HashMap<&str, usize> = HashMap::new();
 
@@ -189,12 +194,10 @@ fn compute_critical_path(open_beads: &[BeadNode], avg_time: f64) -> (f64, usize,
         let my_dist = dist.get(node).copied().unwrap_or(1);
         if let Some(deps) = dependents.get(node) {
             for &dep in deps {
-                if topo_set.contains(dep) {
-                    let new_dist = my_dist + 1;
-                    let entry = dist.entry(dep).or_insert(1);
-                    if new_dist > *entry {
-                        *entry = new_dist;
-                    }
+                let new_dist = my_dist + 1;
+                let entry = dist.entry(dep).or_insert(1);
+                if new_dist > *entry {
+                    *entry = new_dist;
                 }
             }
         }

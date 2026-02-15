@@ -2086,3 +2086,21 @@
 ### Suggested Next Tasks
 - simple-agent-harness-8iq: Exclude cycled beads from critical path estimation
 - simple-agent-harness-cqf: Surface cycle warnings in CLI status output (blocked by fyx + 8iq)
+
+--- 2026-02-15 20:05:07 | simple-agent-harness-8iq ---
+## Last Session: Closed simple-agent-harness-8iq (Exclude cycled beads from critical path estimation)
+
+### What Was Done
+- Refactored `compute_critical_path()` in `src/estimation.rs` to use `cycle_detect::detect_cycles()` from the `cycle_detect` module instead of inline Kahn's-based cycle detection
+- The function now: calls `detect_cycles()` to get SCCs, collects all cycled bead IDs, filters them out of the bead list, then computes the critical path on the remaining clean DAG
+- This consolidates cycle detection logic in one place (`cycle_detect.rs`) rather than having it duplicated in `estimation.rs`
+- All existing tests pass (23 estimation tests, 846 total excluding coordinator slow test)
+- The `format_estimate()` and `status.rs` already had proper cycle warning formatting from prior sessions
+
+### Current State
+- `estimation.rs` now imports and uses `crate::cycle_detect` for cycle detection
+- All 846 tests pass, clippy and fmt clean
+- The coordinator slow test (`coordinator_exits_with_no_work`) is pre-existing and unrelated
+
+### Suggested Next Tasks
+- simple-agent-harness-cqf: Surface cycle warnings in CLI status output (now unblocked)
