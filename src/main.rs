@@ -135,6 +135,51 @@ enum ImproveAction {
         #[arg(long)]
         category: Option<String>,
     },
+    /// Show a single improvement by ref (e.g. R1)
+    Show {
+        /// Improvement ref (e.g. R1, R42)
+        #[arg(name = "REF")]
+        ref_id: String,
+    },
+    /// Update an improvement's fields
+    Update {
+        /// Improvement ref (e.g. R1, R42)
+        #[arg(name = "REF")]
+        ref_id: String,
+
+        /// New status
+        #[arg(long)]
+        status: Option<String>,
+
+        /// New body text
+        #[arg(long)]
+        body: Option<String>,
+
+        /// New context text
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Promote an improvement (shorthand for --status=promoted)
+    Promote {
+        /// Improvement ref (e.g. R1, R42)
+        #[arg(name = "REF")]
+        ref_id: String,
+    },
+    /// Dismiss an improvement (shorthand for --status=dismissed)
+    Dismiss {
+        /// Improvement ref (e.g. R1, R42)
+        #[arg(name = "REF")]
+        ref_id: String,
+
+        /// Reason for dismissal (stored in meta JSON)
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Search improvements by keyword across title, body, and context
+    Search {
+        /// Search query
+        query: String,
+    },
 }
 
 impl Cli {
@@ -214,6 +259,24 @@ async fn main() {
             ImproveAction::List { status, category } => {
                 improve::handle_list(&db_path, status.as_deref(), category.as_deref())
             }
+            ImproveAction::Show { ref_id } => improve::handle_show(&db_path, ref_id),
+            ImproveAction::Update {
+                ref_id,
+                status,
+                body,
+                context,
+            } => improve::handle_update(
+                &db_path,
+                ref_id,
+                status.as_deref(),
+                body.as_deref(),
+                context.as_deref(),
+            ),
+            ImproveAction::Promote { ref_id } => improve::handle_promote(&db_path, ref_id),
+            ImproveAction::Dismiss { ref_id, reason } => {
+                improve::handle_dismiss(&db_path, ref_id, reason.as_deref())
+            }
+            ImproveAction::Search { query } => improve::handle_search(&db_path, query),
         };
 
         if let Err(e) = result {

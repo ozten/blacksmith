@@ -547,3 +547,30 @@
 - Implement configurable extraction rules from TOML config (i9s) — P2, ready
 - Implement configurable target thresholds and metrics targets command (obm) — P2, ready
 - Add quantitative metrics summary to brief command output (pcb) — P2, now unblocked by pr9
+
+--- 2026-02-15 14:15:41 | simple-agent-harness-v25 ---
+## Last Session: Implement improve show/update/promote/dismiss/search commands (simple-agent-harness-v25)
+
+### Completed
+- Added `db::get_improvement(conn, ref_id)` — fetch single improvement by ref
+- Added `db::get_improvement_meta(conn, ref_id)` — fetch meta JSON field by ref
+- Added `db::update_improvement(conn, ref_id, status, body, context, meta)` — dynamic field updates with auto-resolved timestamp on promote/dismiss
+- Added `db::search_improvements(conn, query)` — case-insensitive LIKE search across title, body, context
+- Added 5 new CLI handlers in `improve.rs`:
+  - `handle_show(db_path, ref_id)` — display all fields for a single improvement
+  - `handle_update(db_path, ref_id, status, body, context)` — modify fields by ref
+  - `handle_promote(db_path, ref_id)` — shorthand for status=promoted with resolved timestamp
+  - `handle_dismiss(db_path, ref_id, reason)` — shorthand for status=dismissed with reason in meta JSON
+  - `handle_search(db_path, query)` — full-text search with tabular output
+- Wired 5 new `ImproveAction` variants (Show, Update, Promote, Dismiss, Search) in main.rs
+- 33 new tests across db.rs and improve.rs (270 total tests pass)
+- Clippy clean, fmt applied
+
+### Current State
+- CLI now supports all 7 improve subcommands: add, list, show, update, promote, dismiss, search
+- Pre-existing dead_code warnings remain for functions consumed by future features (events, observations, etc.)
+
+### Suggested Next Tasks
+- Add quantitative metrics summary to brief command output (pcb) — P2, ready
+- Implement configurable extraction rules from TOML config (i9s) — P2, ready
+- Implement configurable target thresholds and metrics targets command (obm) — P2, ready

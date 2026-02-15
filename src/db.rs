@@ -155,6 +155,100 @@ pub fn count_improvements(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM improvements", [], |row| row.get(0))
 }
 
+/// Fetch a single improvement by its ref (e.g. "R1").
+/// Returns None if no matching ref exists.
+pub fn get_improvement(conn: &Connection, ref_id: &str) -> Result<Option<Improvement>> {
+    let mut stmt = conn.prepare(
+        "SELECT ref, created, category, status, title, body, context, tags FROM improvements WHERE ref = ?1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![ref_id], map_improvement)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
+/// Fetch the meta JSON field for an improvement by ref.
+pub fn get_improvement_meta(conn: &Connection, ref_id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT meta FROM improvements WHERE ref = ?1",
+        rusqlite::params![ref_id],
+        |row| row.get(0),
+    )
+}
+
+/// Update an improvement's fields by ref. Only non-None values are updated.
+pub fn update_improvement(
+    conn: &Connection,
+    ref_id: &str,
+    status: Option<&str>,
+    body: Option<&str>,
+    context: Option<&str>,
+    meta: Option<&str>,
+) -> Result<bool> {
+    let mut sets = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut idx = 1;
+
+    if let Some(s) = status {
+        sets.push(format!("status = ?{idx}"));
+        params.push(Box::new(s.to_string()));
+        idx += 1;
+    }
+    if let Some(b) = body {
+        sets.push(format!("body = ?{idx}"));
+        params.push(Box::new(b.to_string()));
+        idx += 1;
+    }
+    if let Some(c) = context {
+        sets.push(format!("context = ?{idx}"));
+        params.push(Box::new(c.to_string()));
+        idx += 1;
+    }
+    if let Some(m) = meta {
+        sets.push(format!("meta = ?{idx}"));
+        params.push(Box::new(m.to_string()));
+        idx += 1;
+    }
+
+    if sets.is_empty() {
+        return Ok(false);
+    }
+
+    // Add resolved timestamp when moving to a terminal status
+    if let Some(s) = status {
+        if s == "promoted" || s == "dismissed" {
+            sets.push("resolved = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')".to_string());
+        }
+    }
+
+    let sql = format!(
+        "UPDATE improvements SET {} WHERE ref = ?{idx}",
+        sets.join(", ")
+    );
+    params.push(Box::new(ref_id.to_string()));
+
+    let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let rows = conn.execute(&sql, param_refs.as_slice())?;
+    Ok(rows > 0)
+}
+
+/// Full-text search across title, body, and context fields.
+/// Returns improvements where the query appears in any of these fields (case-insensitive).
+pub fn search_improvements(conn: &Connection, query: &str) -> Result<Vec<Improvement>> {
+    let pattern = format!("%{query}%");
+    let mut stmt = conn.prepare(
+        "SELECT ref, created, category, status, title, body, context, tags \
+         FROM improvements \
+         WHERE title LIKE ?1 OR body LIKE ?1 OR context LIKE ?1 \
+         ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![pattern], map_improvement)?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 // ── Events ──────────────────────────────────────────────────────────────
 
 /// A row from the events table.
@@ -585,6 +679,221 @@ mod tests {
                 .unwrap();
             assert_eq!(title, "Persisted");
         }
+    }
+
+    // ── Events table tests ──────────────────────────────────────────────
+
+    // ── get_improvement tests ────────────────────────────────────────
+
+    #[test]
+    fn get_improvement_found() {
+        let (_dir, conn) = test_db();
+        insert_improvement(
+            &conn,
+            "workflow",
+            "Test item",
+            Some("body"),
+            Some("ctx"),
+            Some("t1"),
+        )
+        .unwrap();
+
+        let imp = get_improvement(&conn, "R1").unwrap().unwrap();
+        assert_eq!(imp.ref_id, "R1");
+        assert_eq!(imp.title, "Test item");
+        assert_eq!(imp.body.as_deref(), Some("body"));
+        assert_eq!(imp.context.as_deref(), Some("ctx"));
+        assert_eq!(imp.tags.as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn get_improvement_not_found() {
+        let (_dir, conn) = test_db();
+        let imp = get_improvement(&conn, "R999").unwrap();
+        assert!(imp.is_none());
+    }
+
+    #[test]
+    fn get_improvement_meta_found() {
+        let (_dir, conn) = test_db();
+        conn.execute(
+            "INSERT INTO improvements (ref, category, title, meta) VALUES (?1, ?2, ?3, ?4)",
+            params!["R1", "workflow", "Test", r#"{"key": "val"}"#],
+        )
+        .unwrap();
+
+        let meta = get_improvement_meta(&conn, "R1").unwrap();
+        assert!(meta.is_some());
+        assert!(meta.unwrap().contains("key"));
+    }
+
+    // ── update_improvement tests ─────────────────────────────────────
+
+    #[test]
+    fn update_improvement_status() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Item", None, None, None).unwrap();
+
+        let updated = update_improvement(&conn, "R1", Some("validated"), None, None, None).unwrap();
+        assert!(updated);
+
+        let imp = get_improvement(&conn, "R1").unwrap().unwrap();
+        assert_eq!(imp.status, "validated");
+    }
+
+    #[test]
+    fn update_improvement_body_context() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Item", None, None, None).unwrap();
+
+        update_improvement(&conn, "R1", None, Some("new body"), Some("new ctx"), None).unwrap();
+
+        let imp = get_improvement(&conn, "R1").unwrap().unwrap();
+        assert_eq!(imp.body.as_deref(), Some("new body"));
+        assert_eq!(imp.context.as_deref(), Some("new ctx"));
+    }
+
+    #[test]
+    fn update_improvement_sets_resolved_on_promote() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Item", None, None, None).unwrap();
+
+        update_improvement(&conn, "R1", Some("promoted"), None, None, None).unwrap();
+
+        let resolved: Option<String> = conn
+            .query_row(
+                "SELECT resolved FROM improvements WHERE ref = 'R1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn update_improvement_sets_resolved_on_dismiss() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Item", None, None, None).unwrap();
+
+        update_improvement(&conn, "R1", Some("dismissed"), None, None, None).unwrap();
+
+        let resolved: Option<String> = conn
+            .query_row(
+                "SELECT resolved FROM improvements WHERE ref = 'R1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn update_improvement_no_resolved_on_other_status() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Item", None, None, None).unwrap();
+
+        update_improvement(&conn, "R1", Some("validated"), None, None, None).unwrap();
+
+        let resolved: Option<String> = conn
+            .query_row(
+                "SELECT resolved FROM improvements WHERE ref = 'R1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn update_improvement_nonexistent() {
+        let (_dir, conn) = test_db();
+        let updated = update_improvement(&conn, "R999", Some("open"), None, None, None).unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn update_improvement_nothing_to_update() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Item", None, None, None).unwrap();
+        let updated = update_improvement(&conn, "R1", None, None, None, None).unwrap();
+        assert!(!updated);
+    }
+
+    #[test]
+    fn update_improvement_meta() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Item", None, None, None).unwrap();
+
+        update_improvement(&conn, "R1", None, None, None, Some(r#"{"reason": "test"}"#)).unwrap();
+
+        let meta = get_improvement_meta(&conn, "R1").unwrap();
+        assert!(meta.is_some());
+        assert!(meta.unwrap().contains("test"));
+    }
+
+    // ── search_improvements tests ────────────────────────────────────
+
+    #[test]
+    fn search_improvements_by_title() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Reduce token usage", None, None, None).unwrap();
+        insert_improvement(&conn, "cost", "Fix retry logic", None, None, None).unwrap();
+
+        let results = search_improvements(&conn, "token").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Reduce token usage");
+    }
+
+    #[test]
+    fn search_improvements_by_body() {
+        let (_dir, conn) = test_db();
+        insert_improvement(
+            &conn,
+            "workflow",
+            "Title",
+            Some("Use parallel tool calls"),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let results = search_improvements(&conn, "parallel").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_improvements_by_context() {
+        let (_dir, conn) = test_db();
+        insert_improvement(
+            &conn,
+            "workflow",
+            "Title",
+            None,
+            Some("sessions 340-348"),
+            None,
+        )
+        .unwrap();
+
+        let results = search_improvements(&conn, "340").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn search_improvements_no_match() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "workflow", "Something", None, None, None).unwrap();
+
+        let results = search_improvements(&conn, "nonexistent").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn search_improvements_case_insensitive() {
+        let (_dir, conn) = test_db();
+        insert_improvement(&conn, "cost", "Token Usage", None, None, None).unwrap();
+
+        let results = search_improvements(&conn, "token").unwrap();
+        assert_eq!(results.len(), 1);
     }
 
     // ── Events table tests ──────────────────────────────────────────────
