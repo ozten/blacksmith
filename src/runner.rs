@@ -6,6 +6,7 @@ use crate::config::HarnessConfig;
 use crate::retry::{RetryDecision, RetryPolicy};
 use crate::session::{self, SessionResult};
 use crate::signals::SignalHandler;
+use crate::status::{HarnessState, StatusTracker};
 use crate::watchdog::{self, WatchdogOutcome};
 use std::path::PathBuf;
 use tokio::time::Duration;
@@ -52,6 +53,11 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
     let mut consecutive_errors = 0u32;
     const MAX_CONSECUTIVE_ERRORS: u32 = 5;
 
+    // Status file: write state transitions atomically
+    let status_path = config.session.output_dir.join("harness.status");
+    let mut status = StatusTracker::new(status_path, max_iterations, global_iteration);
+    status.update(HarnessState::Starting);
+
     tracing::info!(max_iterations, global_iteration, "starting iteration loop");
 
     while productive < max_iterations {
@@ -62,6 +68,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         {
             tracing::info!("STOP file detected, exiting loop");
             exit_reason = ExitReason::StopFile;
+            status.update(HarnessState::ShuttingDown);
             break;
         }
 
@@ -69,6 +76,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         if signals.shutdown_requested() {
             tracing::info!("shutdown requested, exiting loop");
             exit_reason = ExitReason::Signal;
+            status.update(HarnessState::ShuttingDown);
             break;
         }
 
@@ -78,6 +86,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
             Err(e) => {
                 tracing::error!(error = %e, path = %config.session.prompt_file.display(), "failed to read prompt file");
                 exit_reason = ExitReason::PromptError;
+                status.update(HarnessState::ShuttingDown);
                 break;
             }
         };
@@ -91,6 +100,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     tracing::error!(error = %e, path = %parent.display(), "failed to create output directory");
                     exit_reason = ExitReason::PromptError;
+                    status.update(HarnessState::ShuttingDown);
                     break;
                 }
             }
@@ -102,6 +112,14 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
             output = %output_path.display(),
             "starting iteration"
         );
+
+        // Update status: session running
+        status.set_iteration(productive);
+        status.set_global_iteration(global_iteration);
+        status.set_output_file(&output_path.display().to_string());
+        status.set_output_bytes(0);
+        status.set_session_start();
+        status.update(HarnessState::SessionRunning);
 
         // 4. Spawn session + watchdog
         let session_result =
@@ -117,18 +135,23 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                 consecutive_errors += 1;
                 global_iteration += 1;
                 save_counter(&config.session.counter_file, global_iteration);
+                status.set_global_iteration(global_iteration);
                 if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
                     tracing::error!(
                         consecutive_errors,
                         "too many consecutive session errors, exiting"
                     );
                     exit_reason = ExitReason::PromptError;
+                    status.update(HarnessState::ShuttingDown);
                     break;
                 }
                 retry_policy.reset();
                 continue;
             }
         };
+
+        // Update output bytes in status
+        status.set_output_bytes(result.output_bytes);
 
         tracing::info!(
             exit_code = ?result.exit_code,
@@ -147,6 +170,11 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                 retry_policy.reset();
                 save_counter(&config.session.counter_file, global_iteration);
 
+                status.set_iteration(productive);
+                status.set_global_iteration(global_iteration);
+                status.set_last_completed(global_iteration - 1);
+                status.update(HarnessState::Idle);
+
                 tracing::info!(
                     productive = productive,
                     max = max_iterations,
@@ -162,6 +190,8 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                 );
                 global_iteration += 1;
                 save_counter(&config.session.counter_file, global_iteration);
+                status.set_global_iteration(global_iteration);
+                status.update(HarnessState::Retrying);
 
                 // Delay before retry
                 if config.retry.retry_delay_secs > 0 {
@@ -175,6 +205,11 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                 global_iteration += 1;
                 retry_policy.reset();
                 save_counter(&config.session.counter_file, global_iteration);
+
+                status.set_iteration(productive);
+                status.set_global_iteration(global_iteration);
+                status.set_last_completed(global_iteration - 1);
+                status.update(HarnessState::Idle);
             }
         }
 
@@ -182,6 +217,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         if signals.shutdown_requested() {
             tracing::info!("shutdown requested after session, exiting loop");
             exit_reason = ExitReason::Signal;
+            status.update(HarnessState::ShuttingDown);
             break;
         }
 
@@ -191,6 +227,7 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                 delay_secs = config.backoff.initial_delay_secs,
                 "inter-iteration delay"
             );
+            status.update(HarnessState::Idle);
             tokio::time::sleep(Duration::from_secs(config.backoff.initial_delay_secs)).await;
         }
     }
@@ -201,6 +238,9 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         reason = ?exit_reason,
         "loop finished"
     );
+
+    // Clean up status file on exit
+    status.remove();
 
     RunSummary {
         productive_iterations: productive,

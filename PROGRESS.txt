@@ -1,38 +1,29 @@
-## Last Session: Implement main runner loop orchestration (simple-agent-harness-p0y)
+## Last Session: Implement status file with atomic JSON writes (simple-agent-harness-3dl)
 
 ### Completed
-- Implemented runner.rs with full iteration loop:
-  - `run()`: async main loop that coordinates all modules
-  - `run_session_with_watchdog()`: spawns child process, runs watchdog + force-kill signal handler concurrently via tokio::select!
-  - `load_counter()` / `save_counter()`: persistent global iteration counter (reads/writes plain text file)
-  - `read_prompt()`: reads prompt file for session input
-  - `StopFileStatusExt` trait for ergonomic STOP file checks
-- Loop flow: check STOP file → check signals → read prompt → spawn session + watchdog → evaluate retry policy → update counters → inter-iteration delay
-- Watchdog integration: runs concurrently with child via tokio::select!, kills stale sessions
-- Signal integration: registers child PID for force-kill, checks shutdown between iterations
-- Retry integration: evaluates output size, retries empty sessions with delay, skips after exhausting retries
-- Consecutive error safety: breaks after 5 consecutive spawn/IO failures to prevent infinite loops
-- Exit code 124 convention for watchdog-killed sessions
-- RunSummary + ExitReason returned to main for final output
-- Wired runner into main.rs: installs SignalHandler, calls runner::run(), prints summary
-- 13 new tests (6 unit + 7 integration):
-  - test_load_counter_nonexistent, _valid, _with_whitespace, _invalid
-  - test_save_counter, test_save_and_load_roundtrip
-  - test_run_three_productive_iterations: verifies 3 iterations with echo, output files created, counter persisted
-  - test_run_stops_on_stop_file: STOP file prevents any iterations
-  - test_run_stops_on_signal: pre-set shutdown flag stops loop
-  - test_run_fails_on_missing_prompt: missing prompt file exits with PromptError
-  - test_run_retries_empty_sessions: verifies retry + skip behavior with 'true' command
-  - test_run_resumes_from_existing_counter: continues from persisted counter value
-  - test_run_with_single_iteration: single iteration works correctly
-- All 61 tests pass, clippy clean, fmt applied
+- Created src/status.rs with:
+  - `HarnessState` enum: Starting, PreHooks, SessionRunning, WatchdogKill, Retrying, PostHooks, RateLimitedBackoff, Idle, ShuttingDown (all states from PRD)
+  - `StatusData` struct: all JSON fields from PRD (pid, state, iteration, max_iterations, global_iteration, output_file, output_bytes, session_start, last_update, last_completed_iteration, last_committed, consecutive_rate_limits)
+  - `StatusFile`: atomic write (write-to-temp + rename) and remove operations
+  - `StatusTracker`: mutable state tracker with setter methods, builds StatusData and writes via StatusFile
+  - `StatusError` enum with Display/Error impls
+  - 7 unit tests covering atomic write, overwrite, remove, all state serialization, tracker lifecycle, error paths, error display
+- Integrated StatusTracker into runner.rs:
+  - Starting state at loop begin
+  - SessionRunning state before each session spawn (with output_file, iteration, session_start)
+  - Idle state after productive iterations
+  - Retrying state on empty session retry
+  - ShuttingDown state on all exit paths (STOP file, signal, prompt error, consecutive errors)
+  - Status file removed on clean exit
+- Status file written to `{output_dir}/harness.status`
+- All 68 tests pass, clippy clean, fmt applied
 
 ### Current State
-- Core MVP loop is functional — can run N productive iterations with configurable agent
-- STOP file, SIGINT/SIGTERM, watchdog, and retry all integrated
-- Unblocks: status file (3dl), hooks (8ff), event log (t0t), rate limit detection (7d0), commit detection (ee7)
+- Status file is fully functional with atomic writes at every state transition
+- Pre-existing dead_code warnings remain for unimplemented modules (hooks, metrics) and not-yet-used status variants (PreHooks, PostHooks, WatchdogKill, RateLimitedBackoff)
+- Those variants will be used when hooks (8ff) and rate limiting (7d0) are implemented
 
 ### Suggested Next Tasks
 - Implement structured console logging with tracing (yyb) — P2, unblocked
-- Implement pre/post-session hook execution (8ff) — P2, now unblocked by runner
-- Implement status file with atomic JSON writes (3dl) — P2, now unblocked by runner
+- Implement pre/post-session hook execution (8ff) — P2, will use PreHooks/PostHooks states
+- Implement JSONL event log (t0t) — P2, unblocked

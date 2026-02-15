@@ -5,6 +5,7 @@ mod retry;
 mod runner;
 mod session;
 mod signals;
+mod status;
 mod watchdog;
 
 use clap::Parser;
