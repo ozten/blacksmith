@@ -1,26 +1,33 @@
-## Last Session: Implement watchdog output-growth monitor (simple-agent-harness-fvr)
+## Last Session: Implement retry policy for empty sessions (simple-agent-harness-jr7)
 
 ### Completed
-- Implemented watchdog.rs with full output-growth monitoring:
-  - `WatchdogOutcome` enum: ProcessExited, Killed
-  - `monitor()`: public API taking WatchdogConfig, output file path, child PID
-  - `monitor_inner()`: internal function taking Duration params (enables fast tests)
-  - Algorithm: checks file size every check_interval, resets stale timer on growth, kills process group after stale_limit
-  - `kill_process_group()`: SIGTERM → 5s wait → SIGKILL if still alive
-  - `file_size()`: safe file size helper returning 0 on error
-- 7 tests covering:
-  - file_size: existing file, nonexistent, empty
-  - monitor_kills_stale_process: verifies kill on no-growth process (stale_timeout=0)
-  - monitor_resets_on_growth: process writes for 3s then stops, watchdog waits then kills (~5s test)
-  - monitor_cancelled_returns_process_exited: tokio::select! cancellation pattern
-- All 28 tests pass (10 config + 12 session + 6 watchdog), clippy clean, fmt applied
+- Implemented retry.rs with full empty-session retry policy:
+  - `RetryDecision` enum: Proceed, Retry { attempt }, Skip
+  - `RetryPolicy` struct: tracks max_retries, min_output_bytes, current_attempt
+  - `new()`: creates policy from config values (max_empty_retries, min_output_bytes)
+  - `evaluate(output_bytes)`: returns Proceed if sufficient, Retry if attempts remain, Skip if exhausted
+  - `reset()`: clears attempt counter for new iteration
+  - `current_attempt()`: accessor for current retry count
+  - Logs warnings via tracing when retrying or skipping
+- 10 tests covering:
+  - proceed_when_output_sufficient: >= threshold returns Proceed
+  - retry_when_output_empty: 0 bytes triggers retry
+  - retry_when_output_below_threshold: just under threshold triggers retry
+  - skip_after_max_retries_exhausted: 3rd attempt with max=2 returns Skip
+  - reset_clears_attempt_counter: reset enables fresh retries
+  - zero_max_retries_skips_immediately: 0 retries = instant skip
+  - proceed_does_not_increment_attempt: successful sessions don't count
+  - proceed_after_retry_when_output_recovers: mid-retry recovery works
+  - exact_threshold_proceeds: boundary test
+  - min_output_zero_always_proceeds: 0 threshold = never retry
+- All 38 tests pass (10 config + 12 session + 6 watchdog + 10 retry), clippy clean, fmt applied
 
 ### Current State
-- Watchdog is fully functional and tested
-- Unblocks: runner loop (p0y) which was blocked by both session (d3v, done) and watchdog (fvr, now done)
-- Stub modules still have dead_code warnings (expected until runner integrates them)
+- Retry policy is fully functional and tested
+- Unblocks: runner loop (p0y) which depends on retry (jr7), session (d3v, done), and watchdog (fvr, done)
+- Signal handling (7rx) is also still needed before runner can proceed
 
 ### Suggested Next Tasks
-- Implement main runner loop (simple-agent-harness-p0y) — now unblocked
-- Implement retry policy (simple-agent-harness-jr7) — already unblocked
-- Implement signal handling (simple-agent-harness-7rx) — already unblocked
+- Implement signal handling (simple-agent-harness-7rx) — P1, unblocked
+- Implement structured console logging (simple-agent-harness-yyb) — P2, unblocked
+- After 7rx is done, runner loop (p0y) should be unblocked
