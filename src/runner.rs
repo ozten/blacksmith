@@ -4,7 +4,9 @@
 /// session spawning, watchdog monitoring, retry logic, and signal handling.
 use crate::commit;
 use crate::config::HarnessConfig;
+use crate::db;
 use crate::hooks::{HookEnv, HookRunner};
+use crate::ingest;
 use crate::metrics::{EventLog, SessionEvent};
 use crate::prompt;
 use crate::ratelimit;
@@ -73,6 +75,21 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
         .as_ref()
         .map(|p| EventLog::new(p.clone()));
     let mut retries_this_session = 0u32;
+
+    // Metrics DB: open blacksmith.db for JSONL ingestion (non-fatal if it fails)
+    let metrics_db = {
+        let db_path = config.session.output_dir.join("blacksmith.db");
+        match db::open_or_create(&db_path) {
+            Ok(conn) => {
+                tracing::debug!(path = %db_path.display(), "metrics database opened");
+                Some(conn)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to open metrics database, ingestion disabled");
+                None
+            }
+        }
+    };
 
     // Hook runner: pre/post-session shell commands
     let hook_runner = HookRunner::new(
@@ -256,6 +273,32 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                     }
                 }
 
+                // Ingest JSONL metrics into database
+                if let Some(ref conn) = metrics_db {
+                    match ingest::ingest_session(
+                        conn,
+                        global_iteration as i64,
+                        &output_path,
+                        result.exit_code,
+                    ) {
+                        Ok(m) => {
+                            tracing::info!(
+                                session = global_iteration,
+                                turns = m.turns_total,
+                                cost_usd = format!("{:.4}", m.cost_estimate_usd),
+                                "JSONL metrics ingested"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                session = global_iteration,
+                                "failed to ingest JSONL metrics"
+                            );
+                        }
+                    }
+                }
+
                 // Run post-session hooks
                 if !config.hooks.post_session.is_empty() {
                     status.update(HarnessState::PostHooks);
@@ -372,6 +415,22 @@ pub async fn run(config: &HarnessConfig, signals: &SignalHandler) -> RunSummary 
                     );
                     if let Err(e) = log.append(&event) {
                         tracing::warn!(error = %e, "failed to write event log");
+                    }
+                }
+
+                // Ingest JSONL metrics for skipped session (still has data)
+                if let Some(ref conn) = metrics_db {
+                    if let Err(e) = ingest::ingest_session(
+                        conn,
+                        global_iteration as i64,
+                        &output_path,
+                        result.exit_code,
+                    ) {
+                        tracing::warn!(
+                            error = %e,
+                            session = global_iteration,
+                            "failed to ingest JSONL metrics for skipped session"
+                        );
                     }
                 }
 
@@ -1283,5 +1342,82 @@ echo "Changes committed via git commit -m fix"
         assert!(marker.exists(), "post hook should have run");
         let contents = std::fs::read_to_string(&marker).unwrap();
         assert_eq!(contents.trim(), "true", "HARNESS_COMMITTED should be true");
+    }
+
+    #[tokio::test]
+    async fn test_run_ingests_jsonl_metrics_to_db() {
+        let dir = tempdir().unwrap();
+        // Script outputs valid JSONL with assistant turns and a result event
+        let script = dir.path().join("metrics_echo.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}\n'
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}},{"type":"tool_use","name":"Grep","input":{}}]}}\n'
+printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,"modelUsage":{"opus":{"inputTokens":100,"outputTokens":50,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}}}\n'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+
+        let mut config = test_config(dir.path(), script.to_str().unwrap(), vec![]);
+        config.session.max_iterations = 1;
+        config.backoff.initial_delay_secs = 0;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        assert_eq!(summary.productive_iterations, 1);
+
+        // Verify blacksmith.db was created and has ingested data
+        let db_path = dir.path().join("blacksmith.db");
+        assert!(db_path.exists(), "blacksmith.db should be created");
+
+        let conn = crate::db::open_or_create(&db_path).unwrap();
+
+        // Check events were written for session 0
+        let events = crate::db::events_by_session(&conn, 0).unwrap();
+        assert!(!events.is_empty(), "events should be ingested");
+
+        let turns = events.iter().find(|e| e.kind == "turns.total").unwrap();
+        assert_eq!(turns.value.as_deref(), Some("2"));
+
+        let parallel = events.iter().find(|e| e.kind == "turns.parallel").unwrap();
+        assert_eq!(parallel.value.as_deref(), Some("1"));
+
+        let cost = events
+            .iter()
+            .find(|e| e.kind == "cost.estimate_usd")
+            .unwrap();
+        assert_eq!(cost.value.as_deref(), Some("0.420000"));
+
+        // Check observation was written
+        let obs = crate::db::get_observation(&conn, 0).unwrap().unwrap();
+        let data: serde_json::Value = serde_json::from_str(&obs.data).unwrap();
+        assert_eq!(data["turns.total"], 2);
+        assert_eq!(data["turns.parallel"], 1);
+        assert_eq!(data["cost.estimate_usd"], 0.42);
+    }
+
+    #[tokio::test]
+    async fn test_run_ingestion_does_not_block_on_failure() {
+        let dir = tempdir().unwrap();
+        let config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
+        config.session.max_iterations;
+
+        std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
+
+        // Make blacksmith.db a directory to cause open_or_create to fail
+        std::fs::create_dir_all(dir.path().join("blacksmith.db")).unwrap();
+
+        let signals = make_signals();
+        let summary = run(&config, &signals).await;
+
+        // Should still complete despite DB failure
+        assert_eq!(summary.productive_iterations, 3);
+        assert_eq!(summary.exit_reason, ExitReason::MaxIterations);
     }
 }

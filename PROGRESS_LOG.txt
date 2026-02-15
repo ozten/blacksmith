@@ -499,3 +499,27 @@
 - Integrate automatic post-session JSONL ingestion into loop (k53) — P1, now unblocked
 - Implement metrics log and metrics status CLI commands (pr9) — P1, now unblocked
 - Implement improve show/update/promote/dismiss/search commands (v25) — P2, ready
+
+--- 2026-02-15 14:10:12 | simple-agent-harness-k53 ---
+## Last Session: Integrate automatic post-session JSONL ingestion into loop (simple-agent-harness-k53)
+
+### Completed
+- Wired `ingest::ingest_session()` into `runner.rs` main loop
+- Opens `blacksmith.db` once at loop startup via `db::open_or_create()`
+- After each productive session (RetryDecision::Proceed), calls `ingest_session(conn, global_iteration, &output_path, exit_code)` to extract metrics from the JSONL output and write events + observation to the DB
+- Also ingests metrics for skipped sessions (RetryDecision::Skip) — they still produce output worth tracking
+- All ingestion is non-fatal: DB open failure disables ingestion with a warning, individual ingestion failures are logged as warnings but don't stop the loop
+- Added 2 new tests:
+  - `test_run_ingests_jsonl_metrics_to_db`: verifies metrics are extracted from JSONL and written to blacksmith.db
+  - `test_run_ingestion_does_not_block_on_failure`: verifies loop continues when DB can't be opened
+- All 227 tests pass, clippy clean (only pre-existing dead_code warnings), fmt applied
+
+### Current State
+- Runner loop now automatically ingests session metrics after each session
+- `ingest.rs` functions are no longer dead code (called from runner.rs)
+- The `db.rs` query functions (events_by_session, events_by_kind, get_observation, etc.) still show dead_code warnings — they'll be consumed by the metrics CLI commands (pr9)
+
+### Suggested Next Tasks
+- Implement metrics log and metrics status CLI commands (pr9) — P1, ready
+- Implement improve show/update/promote/dismiss/search commands (v25) — P2, ready
+- Implement configurable extraction rules from TOML config (i9s) — P2, ready
