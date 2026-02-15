@@ -2,6 +2,7 @@ mod commit;
 mod config;
 mod db;
 mod hooks;
+mod improve;
 mod metrics;
 mod prompt;
 mod ratelimit;
@@ -12,7 +13,7 @@ mod signals;
 mod status;
 mod watchdog;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use config::{CliOverrides, HarnessConfig};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
@@ -36,7 +37,7 @@ pub struct Cli {
     prompt: Option<PathBuf>,
 
     /// Output directory (overrides config)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     output_dir: Option<PathBuf>,
 
     /// Stale timeout in minutes (overrides config)
@@ -52,16 +53,63 @@ pub struct Cli {
     dry_run: bool,
 
     /// Extra logging (watchdog checks, retry decisions)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     verbose: bool,
 
     /// Suppress per-iteration banners, only errors and summary
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     quiet: bool,
 
     /// Print current loop state and exit
     #[arg(long)]
     status: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Manage improvement records (institutional memory)
+    Improve {
+        #[command(subcommand)]
+        action: ImproveAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ImproveAction {
+    /// Add a new improvement observation
+    Add {
+        /// Title of the improvement
+        title: String,
+
+        /// Category (e.g. workflow, cost, reliability, performance, code-quality)
+        #[arg(long)]
+        category: String,
+
+        /// Detailed description (markdown)
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Evidence/context (e.g. "sessions 340-348 showed high narration turns")
+        #[arg(long)]
+        context: Option<String>,
+
+        /// Comma-separated tags
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// List improvements with optional filters
+    List {
+        /// Filter by status (open, promoted, dismissed, revisit, validated)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Filter by category
+        #[arg(long)]
+        category: Option<String>,
+    },
 }
 
 impl Cli {
@@ -98,6 +146,43 @@ async fn main() {
         .init();
 
     tracing::debug!(?cli, "parsed CLI arguments");
+
+    // Handle subcommands that don't need the full config
+    if let Some(Commands::Improve { action }) = &cli.command {
+        // Resolve db path: output_dir/blacksmith.db
+        // Use output_dir from CLI or default "."
+        let output_dir = cli
+            .output_dir
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let db_path = output_dir.join("blacksmith.db");
+
+        let result = match action {
+            ImproveAction::Add {
+                title,
+                category,
+                body,
+                context,
+                tags,
+            } => improve::handle_add(
+                &db_path,
+                title,
+                category,
+                body.as_deref(),
+                context.as_deref(),
+                tags.as_deref(),
+            ),
+            ImproveAction::List { status, category } => {
+                improve::handle_list(&db_path, status.as_deref(), category.as_deref())
+            }
+        };
+
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Load config: file > defaults, then CLI > file
     let mut config = match HarnessConfig::load(&cli.config) {

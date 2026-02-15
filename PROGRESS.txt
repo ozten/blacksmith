@@ -1,22 +1,24 @@
-## Last Session: Add SQLite dependency and create database module with improvements table (simple-agent-harness-sxy)
+## Last Session: Implement improve add and improve list CLI subcommands (simple-agent-harness-evl)
 
 ### Completed
-- Added `rusqlite` v0.31 with `bundled` feature to Cargo.toml
-- Created `src/db.rs` module with:
-  - `open_or_create(path)` function that opens/creates SQLite database at given path
-  - Improvements table schema per PRD: id, ref, created, resolved, category, status, title, body, context, tags, meta
-  - Indexes on status and category columns
-  - WAL journal mode enabled for better concurrent read performance
-  - `next_ref(conn)` function for auto-increment ref assignment (R1, R2, ...)
-- Added `mod db` to `src/main.rs`
-- 13 comprehensive tests covering: creation, idempotency, insert/query, defaults, timestamps, uniqueness, ref generation, all columns, index usage, persistence
-- All 171 tests pass (158 existing + 13 new), clippy clean, fmt applied
+- Added clap subcommand structure to `src/main.rs`: `blacksmith improve add` and `blacksmith improve list`
+- `improve add` takes positional title, required `--category`, optional `--body`, `--context`, `--tags`
+- Auto-assigns next ref (R1, R2, ...) on creation using existing `db::next_ref`
+- `improve list` supports `--status` and `--category` filters, displays in table format
+- Created `src/improve.rs` with `handle_add` and `handle_list` command handlers
+- Added `db::insert_improvement` and `db::list_improvements` query functions to `src/db.rs`
+- Added `db::Improvement` struct for query results
+- 7 new tests (in improve.rs): add, add with all fields, multiple ref increment, list empty, filter by status, filter by category, combined filters
+- All 178 tests pass, clippy clean (only pre-existing dead_code warnings), fmt applied
+- Smoke tested CLI: add, list, filtered list all work correctly
 
 ### Current State
-- Database module is ready but not yet wired into the runner loop
-- Pre-existing dead_code warnings remain for unimplemented features (metrics.path, retry.current_attempt, etc.)
-- The db::open_or_create and db::next_ref are pub but currently show dead_code warnings since nothing calls them yet
+- `improve add` and `improve list` are fully functional
+- Database path defaults to `./blacksmith.db`, overridable with `--output-dir`
+- The `--output-dir` flag is global (works with subcommands), other run-mode flags are not
+- Pre-existing dead_code warnings remain for unimplemented features
 
 ### Suggested Next Tasks
-- Create events and observations tables in database module (cl6) — P1, now unblocked
-- Implement improve add and improve list CLI subcommands (evl) — P1, now unblocked
+- Create events and observations tables in database module (cl6) — P1, ready
+- Implement improve show/update/promote/dismiss/search commands (v25) — P2, now unblocked
+- Implement brief command with improvement context output (11h) — P1, now unblocked

@@ -364,3 +364,29 @@
 ### Suggested Next Tasks
 - Create events and observations tables in database module (cl6) — P1, now unblocked
 - Implement improve add and improve list CLI subcommands (evl) — P1, now unblocked
+
+--- 2026-02-15 13:55:59 | simple-agent-harness-evl ---
+## Last Session: Implement improve add and improve list CLI subcommands (simple-agent-harness-evl)
+
+### Completed
+- Added clap subcommand structure to `src/main.rs`: `blacksmith improve add` and `blacksmith improve list`
+- `improve add` takes positional title, required `--category`, optional `--body`, `--context`, `--tags`
+- Auto-assigns next ref (R1, R2, ...) on creation using existing `db::next_ref`
+- `improve list` supports `--status` and `--category` filters, displays in table format
+- Created `src/improve.rs` with `handle_add` and `handle_list` command handlers
+- Added `db::insert_improvement` and `db::list_improvements` query functions to `src/db.rs`
+- Added `db::Improvement` struct for query results
+- 7 new tests (in improve.rs): add, add with all fields, multiple ref increment, list empty, filter by status, filter by category, combined filters
+- All 178 tests pass, clippy clean (only pre-existing dead_code warnings), fmt applied
+- Smoke tested CLI: add, list, filtered list all work correctly
+
+### Current State
+- `improve add` and `improve list` are fully functional
+- Database path defaults to `./blacksmith.db`, overridable with `--output-dir`
+- The `--output-dir` flag is global (works with subcommands), other run-mode flags are not
+- Pre-existing dead_code warnings remain for unimplemented features
+
+### Suggested Next Tasks
+- Create events and observations tables in database module (cl6) — P1, ready
+- Implement improve show/update/promote/dismiss/search commands (v25) — P2, now unblocked
+- Implement brief command with improvement context output (11h) — P1, now unblocked

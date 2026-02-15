@@ -46,6 +46,102 @@ pub fn next_ref(conn: &Connection) -> Result<String> {
     Ok(format!("R{next}"))
 }
 
+/// Insert a new improvement record, auto-assigning the next ref.
+/// Returns the assigned ref (e.g. "R1").
+pub fn insert_improvement(
+    conn: &Connection,
+    category: &str,
+    title: &str,
+    body: Option<&str>,
+    context: Option<&str>,
+    tags: Option<&str>,
+) -> Result<String> {
+    let ref_id = next_ref(conn)?;
+    conn.execute(
+        "INSERT INTO improvements (ref, category, title, body, context, tags) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![ref_id, category, title, body, context, tags],
+    )?;
+    Ok(ref_id)
+}
+
+/// A row from the improvements table.
+#[derive(Debug)]
+pub struct Improvement {
+    pub ref_id: String,
+    pub created: String,
+    pub category: String,
+    pub status: String,
+    pub title: String,
+    pub body: Option<String>,
+    pub context: Option<String>,
+    pub tags: Option<String>,
+}
+
+/// List improvements with optional status and category filters.
+pub fn list_improvements(
+    conn: &Connection,
+    status: Option<&str>,
+    category: Option<&str>,
+) -> Result<Vec<Improvement>> {
+    let mut sql =
+        "SELECT ref, created, category, status, title, body, context, tags FROM improvements"
+            .to_string();
+    let mut conditions = Vec::new();
+
+    if status.is_some() {
+        conditions.push("status = ?1");
+    }
+    if category.is_some() {
+        conditions.push(if status.is_some() {
+            "category = ?2"
+        } else {
+            "category = ?1"
+        });
+    }
+
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+    sql.push_str(" ORDER BY id ASC");
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let rows = match (status, category) {
+        (Some(s), Some(c)) => {
+            let iter = stmt.query_map(rusqlite::params![s, c], map_improvement)?;
+            iter.collect::<Result<Vec<_>>>()?
+        }
+        (Some(s), None) => {
+            let iter = stmt.query_map(rusqlite::params![s], map_improvement)?;
+            iter.collect::<Result<Vec<_>>>()?
+        }
+        (None, Some(c)) => {
+            let iter = stmt.query_map(rusqlite::params![c], map_improvement)?;
+            iter.collect::<Result<Vec<_>>>()?
+        }
+        (None, None) => {
+            let iter = stmt.query_map([], map_improvement)?;
+            iter.collect::<Result<Vec<_>>>()?
+        }
+    };
+
+    Ok(rows)
+}
+
+fn map_improvement(row: &rusqlite::Row) -> Result<Improvement> {
+    Ok(Improvement {
+        ref_id: row.get(0)?,
+        created: row.get(1)?,
+        category: row.get(2)?,
+        status: row.get(3)?,
+        title: row.get(4)?,
+        body: row.get(5)?,
+        context: row.get(6)?,
+        tags: row.get(7)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
