@@ -1,16 +1,14 @@
-## Last Session: Closed simple-agent-harness-8iq (Exclude cycled beads from critical path estimation)
+## Last Session: Closed simple-agent-harness-cqf (Surface cycle warnings in CLI status output)
 
 ### What Was Done
-- Refactored `compute_critical_path()` in `src/estimation.rs` to use `cycle_detect::detect_cycles()` from the `cycle_detect` module instead of inline Kahn's-based cycle detection
-- The function now: calls `detect_cycles()` to get SCCs, collects all cycled bead IDs, filters them out of the bead list, then computes the critical path on the remaining clean DAG
-- This consolidates cycle detection logic in one place (`cycle_detect.rs`) rather than having it duplicated in `estimation.rs`
-- All existing tests pass (23 estimation tests, 846 total excluding coordinator slow test)
-- The `format_estimate()` and `status.rs` already had proper cycle warning formatting from prior sessions
+- Updated `build_progress_string()` in `src/runner.rs` to surface cycle warnings in the `blacksmith run` progress line:
+  - Progress count now says "schedulable beads" when cycles exist (matching PRD format)
+  - Cycle warning now includes "beads" count and fix hint: `⚠ N beads in dependency cycle — run bd dep cycles to fix`
+- The `--status` output in `src/status.rs` was already complete from prior sessions (Schedulable line + Cycle warning)
 
 ### Current State
-- `estimation.rs` now imports and uses `crate::cycle_detect` for cycle detection
-- All 846 tests pass, clippy and fmt clean
-- The coordinator slow test (`coordinator_exits_with_no_work`) is pre-existing and unrelated
+- All 869 tests pass, clippy and fmt clean
+- Both CLI surfaces now match the PRD spec (SPEC-v3-agents.md lines 775-796)
 
 ### Suggested Next Tasks
-- simple-agent-harness-cqf: Surface cycle warnings in CLI status output (now unblocked)
+- Check `bd ready` for next available work

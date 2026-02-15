@@ -625,11 +625,18 @@ fn build_progress_string(conn: &rusqlite::Connection, workers: u32) -> Option<St
     let est = estimation::estimate(conn, &open_beads, workers);
 
     let mut parts = Vec::new();
-    parts.push(format!(
-        "Progress: {}/{} beads",
-        completed,
-        completed + est.open_count
-    ));
+    let schedulable_total = completed + est.open_count;
+    if !est.cycled_beads.is_empty() {
+        parts.push(format!(
+            "Progress: {}/{} schedulable beads",
+            completed, schedulable_total
+        ));
+    } else {
+        parts.push(format!(
+            "Progress: {}/{} beads",
+            completed, schedulable_total
+        ));
+    }
 
     if let Some(avg) = est.avg_time_per_bead {
         parts.push(format!("avg {}/bead", format_duration_secs(avg as u64)));
@@ -649,7 +656,7 @@ fn build_progress_string(conn: &rusqlite::Connection, workers: u32) -> Option<St
 
     if !est.cycled_beads.is_empty() {
         parts.push(format!(
-            "\u{26a0} {} in dependency cycle",
+            "\u{26a0} {} beads in dependency cycle \u{2014} run `bd dep cycles` to fix",
             est.cycled_beads.len()
         ));
     }

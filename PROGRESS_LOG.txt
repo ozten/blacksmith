@@ -2104,3 +2104,19 @@
 
 ### Suggested Next Tasks
 - simple-agent-harness-cqf: Surface cycle warnings in CLI status output (now unblocked)
+
+--- 2026-02-15 20:07:27 | simple-agent-harness-cqf ---
+## Last Session: Closed simple-agent-harness-cqf (Surface cycle warnings in CLI status output)
+
+### What Was Done
+- Updated `build_progress_string()` in `src/runner.rs` to surface cycle warnings in the `blacksmith run` progress line:
+  - Progress count now says "schedulable beads" when cycles exist (matching PRD format)
+  - Cycle warning now includes "beads" count and fix hint: `⚠ N beads in dependency cycle — run bd dep cycles to fix`
+- The `--status` output in `src/status.rs` was already complete from prior sessions (Schedulable line + Cycle warning)
+
+### Current State
+- All 869 tests pass, clippy and fmt clean
+- Both CLI surfaces now match the PRD spec (SPEC-v3-agents.md lines 775-796)
+
+### Suggested Next Tasks
+- Check `bd ready` for next available work
