@@ -8,6 +8,7 @@
 # Steps:
 #   0a. Run cargo check — abort if code doesn't compile
 #   0b. Run cargo test — abort if tests fail
+#   0c. Verify bead deliverables — check affected files exist, run verify commands
 #   1. Append PROGRESS.txt to PROGRESS_LOG.txt (timestamped)
 #   2. Stage specified files (or git add -u)
 #   3. git commit
@@ -55,6 +56,88 @@ if ! cargo test 2>&1; then
   exit 1
 fi
 echo -e "${GREEN}[0b/8] cargo test passed${NC}"
+
+# 0c. Verify bead deliverables — check affected files exist, run verify commands
+echo -e "${YELLOW}[0c/8] Verifying bead deliverables...${NC}"
+VERIFY_FAILED=0
+
+# Extract bead description via bd show --json
+BEAD_DESC=""
+if BEAD_JSON=$(bd show "$BEAD_ID" --allow-stale --json 2>/dev/null); then
+  BEAD_DESC=$(printf '%s' "$BEAD_JSON" | jq -r '.[0].description // ""' 2>/dev/null || true)
+fi
+
+if [ -z "$BEAD_DESC" ]; then
+  echo -e "${YELLOW}  Could not fetch bead description — skipping deliverable verification${NC}"
+else
+  # --- Check ## Affected files: verify files marked (new) actually exist ---
+  AFFECTED_SECTION=$(printf '%s\n' "$BEAD_DESC" | sed -n '/^## Affected files/,/^## /p' | sed '1d;/^## /d')
+  if [ -n "$AFFECTED_SECTION" ]; then
+    while IFS= read -r line; do
+      # Match lines like "- src/foo.rs (new)" or "- src/foo.rs (new — description)"
+      if echo "$line" | grep -qiE '\(new\b'; then
+        # Extract the file path: strip leading "- " and trailing " (new...)"
+        FILE_PATH=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/[[:space:]]*(new.*//')
+        if [ ! -f "$FILE_PATH" ]; then
+          echo -e "${RED}  MISSING: Affected file marked (new) does not exist: ${FILE_PATH}${NC}"
+          VERIFY_FAILED=1
+        else
+          echo -e "${GREEN}  OK: ${FILE_PATH} exists${NC}"
+        fi
+      fi
+    done <<< "$AFFECTED_SECTION"
+  fi
+
+  # --- Check ## Affected files: verify files marked (modified) actually changed ---
+  if [ -n "$AFFECTED_SECTION" ]; then
+    while IFS= read -r line; do
+      if echo "$line" | grep -qiE '\(modified\b'; then
+        FILE_PATH=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*//' | sed 's/[[:space:]]*(modified.*//')
+        if [ ! -f "$FILE_PATH" ]; then
+          echo -e "${RED}  MISSING: Affected file marked (modified) does not exist: ${FILE_PATH}${NC}"
+          VERIFY_FAILED=1
+        elif git diff --quiet HEAD -- "$FILE_PATH" 2>/dev/null && git diff --quiet -- "$FILE_PATH" 2>/dev/null; then
+          echo -e "${YELLOW}  WARNING: ${FILE_PATH} listed as (modified) but has no changes${NC}"
+          # Warn but don't fail — the agent may have changed and reverted it
+        else
+          echo -e "${GREEN}  OK: ${FILE_PATH} modified${NC}"
+        fi
+      fi
+    done <<< "$AFFECTED_SECTION"
+  fi
+
+  # --- Run ## Verify commands ---
+  VERIFY_SECTION=$(printf '%s\n' "$BEAD_DESC" | sed -n '/^## Verify$/,/^## /p' | sed '1d;/^## /d')
+  if [ -n "$VERIFY_SECTION" ]; then
+    # Extract "Run:" lines and execute them
+    while IFS= read -r line; do
+      if echo "$line" | grep -qiE '^[[:space:]]*-?[[:space:]]*Run:'; then
+        VERIFY_CMD=$(echo "$line" | sed 's/^[[:space:]]*-[[:space:]]*Run:[[:space:]]*//' | sed 's/^[[:space:]]*Run:[[:space:]]*//')
+        if [ -n "$VERIFY_CMD" ]; then
+          echo -e "${YELLOW}  Running verify command: ${VERIFY_CMD}${NC}"
+          if eval "$VERIFY_CMD" 2>&1; then
+            echo -e "${GREEN}  Verify command passed${NC}"
+          else
+            echo -e "${RED}  FAILED: Verify command exited non-zero: ${VERIFY_CMD}${NC}"
+            VERIFY_FAILED=1
+          fi
+        fi
+      fi
+    done <<< "$VERIFY_SECTION"
+  else
+    echo -e "${YELLOW}  No ## Verify section found in bead description — skipping command verification${NC}"
+  fi
+fi
+
+if [ "$VERIFY_FAILED" -eq 1 ]; then
+  echo ""
+  echo -e "${RED}=== BEAD DELIVERABLE VERIFICATION FAILED ===${NC}"
+  echo -e "${RED}Bead ${BEAD_ID} will NOT be closed. Fix the issues above first.${NC}"
+  echo -e "${RED}If the bead description is outdated, update it with:${NC}"
+  echo -e "${RED}  bd update ${BEAD_ID} --description=\"...\"${NC}"
+  exit 1
+fi
+echo -e "${GREEN}[0c/8] Bead deliverable verification passed${NC}"
 
 # 1. Append PROGRESS.txt to PROGRESS_LOG.txt with timestamp
 if [ -f PROGRESS.txt ]; then

@@ -2711,3 +2711,33 @@
 - simple-agent-harness-cgo (P2): Add refactor proposal generation from architecture analysis
 - simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
 - simple-agent-harness-34d (P3): Add architecture agent configuration knobs
+
+--- 2026-02-16 17:04:40 | simple-agent-harness-aegv ---
+## Completed: simple-agent-harness-aegv — Bead deliverable verification gate
+
+### What was done
+Added step 0c to `bd-finish.sh` that verifies bead deliverables before allowing `bd close`:
+
+1. **Affected files check (new)**: Files marked `(new)` in `## Affected files` must exist on disk. Hard failure if missing.
+2. **Affected files check (modified)**: Files marked `(modified)` must exist. Warning (not failure) if file exists but has no git diff changes.
+3. **Verify command execution**: `Run:` commands from `## Verify` section are extracted and executed. Non-zero exit = hard failure.
+4. **Graceful degradation**: If `bd show --json` fails or the bead has no Verify/Affected files sections, warns but doesn't block.
+
+### Key implementation details
+- Uses `bd show --allow-stale --json` to avoid sync issues in worktrees
+- Uses `printf '%s'` instead of `echo` when piping JSON to avoid escape sequence interpretation
+- Runs AFTER cargo check + cargo test (step 0c) but BEFORE staging/commit/close
+- Verification failure exits with code 1 and prints actionable guidance
+
+### Files changed
+- `bd-finish.sh` (modified — added step 0c deliverable verification gate)
+
+### Current state
+- `bd-finish.sh` updated with verification gate
+- All 1147 tests pass
+- `cargo check` passes
+- Shell syntax validated (`bash -n`)
+
+### Suggested next tasks
+- Consider adding `## Verify` sections to existing open beads that lack them
+- The beads simple-agent-harness-374 and simple-agent-harness-2kb mentioned in the bug report can now be re-attempted — the verification gate will prevent false closures
