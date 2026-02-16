@@ -1,23 +1,21 @@
-## Last Session: Add boundary violation detector for module imports (2026-02-16)
+## Last Session: Add metadata regeneration strategy with lazy invalidation (2026-02-16)
 
 ### What Was Done
-- Implemented bead simple-agent-harness-aol: boundary violation detector for module imports
-- Created src/boundary_violation.rs with:
-  - `BoundaryViolation` struct: source_module, target_module, symbol, source_file, import_line
-  - `detect_boundary_violations()` — takes modules + public API maps, returns list of violations
-  - `extract_cross_module_imports()` — parses `use crate::` imports extracting module path and symbol names
-  - `split_module_and_symbols()` — splits parsed path segments into module path vs imported symbols
-  - `parse_group_import()` — handles `{Foo, Bar}` group imports
-  - `build_file_to_module()` — maps files to owning module names
-  - `resolve_target_module()` — resolves import module paths to module names (full path, prefix, and crate-root fallback)
-- 20 tests covering: empty project, public API access (no violation), non-public symbol access, intra-module imports, group imports with mixed visibility, nested module violations, pub use reexports, multiple violations across modules, glob imports (skipped), comments not parsed, sorting, unit tests for parsing helpers
+- Implemented bead simple-agent-harness-n1d: metadata regeneration with lazy invalidation
+- Created src/metadata_regen.rs with:
+  - `RefreshOutcome` enum: CacheHit, Regenerated, NoIntent
+  - `ensure_fresh()` — checks intent cache (Layer 1), then checks/regenerates file resolution (Layer 2) against current commit
+  - `invalidate_on_integration()` — marks all stale layer-2 entries for deletion after main advances (lazy: no regeneration until scheduler needs it)
+  - `regenerate_after_refactor()` — proactively regenerates layer 2 for all pending tasks after refactor integration
+  - `RegenerationReport` struct: tracks invalidated/regenerated/already_fresh/skipped_no_intent counts
+- 12 tests covering: no intent, cache hit, stale commit regeneration, missing resolution, cache persistence, integration invalidation, refactor regeneration (full workflow, mixed states, already fresh, no intent, empty task list)
 
 ### Current State
 - Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
-- Full test suite: 1069 passed, 0 failed, 1 ignored
-- boundary_violation module ready for downstream beads (structural metrics aggregator)
+- Full test suite: 1081 passed, 0 failed, 1 ignored
+- metadata_regen module ready for downstream beads (ensure_fresh_metadata for scheduler integration, metadata drift detection)
 
 ### Suggested Next Tasks
-- simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
-- simple-agent-harness-a9n (P2): Implement structural metrics aggregator (may need more metric modules first)
-- simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
+- simple-agent-harness-90v (P2): Implement ensure_fresh_metadata for scheduler integration (now unblocked)
+- simple-agent-harness-buv (P2): Add metadata drift detection between regenerations (now unblocked)
+- simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis

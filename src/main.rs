@@ -21,6 +21,7 @@ mod improve;
 mod ingest;
 mod integrator;
 mod intent;
+mod metadata_regen;
 mod metrics;
 mod metrics_cmd;
 mod migrate;

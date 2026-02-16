@@ -2482,3 +2482,26 @@
 - simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
 - simple-agent-harness-a9n (P2): Implement structural metrics aggregator (may need more metric modules first)
 - simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
+
+--- 2026-02-16 00:20:40 | simple-agent-harness-n1d ---
+## Last Session: Add metadata regeneration strategy with lazy invalidation (2026-02-16)
+
+### What Was Done
+- Implemented bead simple-agent-harness-n1d: metadata regeneration with lazy invalidation
+- Created src/metadata_regen.rs with:
+  - `RefreshOutcome` enum: CacheHit, Regenerated, NoIntent
+  - `ensure_fresh()` — checks intent cache (Layer 1), then checks/regenerates file resolution (Layer 2) against current commit
+  - `invalidate_on_integration()` — marks all stale layer-2 entries for deletion after main advances (lazy: no regeneration until scheduler needs it)
+  - `regenerate_after_refactor()` — proactively regenerates layer 2 for all pending tasks after refactor integration
+  - `RegenerationReport` struct: tracks invalidated/regenerated/already_fresh/skipped_no_intent counts
+- 12 tests covering: no intent, cache hit, stale commit regeneration, missing resolution, cache persistence, integration invalidation, refactor regeneration (full workflow, mixed states, already fresh, no intent, empty task list)
+
+### Current State
+- Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
+- Full test suite: 1081 passed, 0 failed, 1 ignored
+- metadata_regen module ready for downstream beads (ensure_fresh_metadata for scheduler integration, metadata drift detection)
+
+### Suggested Next Tasks
+- simple-agent-harness-90v (P2): Implement ensure_fresh_metadata for scheduler integration (now unblocked)
+- simple-agent-harness-buv (P2): Add metadata drift detection between regenerations (now unblocked)
+- simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis
