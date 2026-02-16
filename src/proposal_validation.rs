@@ -474,7 +474,8 @@ fn check_conflict_with_in_progress(
     for assignment in &active {
         // Check affected_globs for overlap
         if let Some(globs) = &assignment.affected_globs {
-            let task_files: Vec<&str> = globs.split(',').map(|s| s.trim()).collect();
+            let task_files: Vec<String> =
+                serde_json::from_str(globs).unwrap_or_default();
             let mut overlapping = Vec::new();
 
             for task_file in &task_files {
@@ -999,7 +1000,7 @@ mod tests {
             "task-123",
             "/tmp/wt",
             "coding",
-            Some("src/auth/mod.rs,src/auth/session.rs"),
+            Some(r#"["src/auth/mod.rs","src/auth/session.rs"]"#),
         )
         .unwrap();
 
@@ -1031,7 +1032,7 @@ mod tests {
             "task-456",
             "/tmp/wt",
             "coding",
-            Some("src/db/mod.rs"),
+            Some(r#"["src/db/mod.rs"]"#),
         )
         .unwrap();
 
@@ -1058,7 +1059,7 @@ mod tests {
             "task-done",
             "/tmp/wt",
             "coding",
-            Some("src/auth/mod.rs"),
+            Some(r#"["src/auth/mod.rs"]"#),
         )
         .unwrap();
         crate::db::update_worker_assignment_status(&conn, id, "completed", None).unwrap();
@@ -1138,7 +1139,7 @@ mod tests {
             "active-task",
             "/tmp/wt",
             "coding",
-            Some("src/auth/mod.rs"),
+            Some(r#"["src/auth/mod.rs"]"#),
         )
         .unwrap();
 
