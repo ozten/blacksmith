@@ -15,7 +15,6 @@ A supervised agent harness that runs AI coding agents in a loop — dispatching 
 | [Multi-Agent Coordination](multi-agent.md) | Workers, scheduling, integration, manifests |
 | [Deployment Model](deployment.md) | Embedded defaults, `init`, `finish`, self-improvement |
 | [Architecture Analysis](architecture-analysis.md) | Intent analysis, structural metrics, refactor proposals |
-| [Operations Guide](operations.md) | Graceful shutdown, post-shutdown checks, resuming |
 | [Troubleshooting](troubleshooting.md) | Common issues, error codes, recovery procedures |
 
 ## Specs

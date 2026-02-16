@@ -22,7 +22,7 @@ use crate::public_api::ModuleApi;
 use crate::signal_correlator::RefactorCandidate;
 
 /// The kind of refactoring being proposed.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProposalKind {
     /// Split a large module into two or more smaller modules.
     SplitModule,
@@ -35,7 +35,7 @@ pub enum ProposalKind {
 }
 
 /// A refactoring proposal to be validated before becoming a task.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct RefactorProposal {
     /// The kind of refactoring.
     pub kind: ProposalKind,
