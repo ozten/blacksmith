@@ -2434,3 +2434,26 @@
 - simple-agent-harness-aol (P2): Add boundary violation detector for module imports
 - simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
 - simple-agent-harness-a9n (P2): Implement structural metrics aggregator (blocked until more metrics done)
+
+--- 2026-02-16 00:14:39 | simple-agent-harness-33k ---
+## Last Session: Add circular dependency detection for modules (2026-02-16)
+
+### What Was Done
+- Implemented bead simple-agent-harness-33k: circular dependency detection at the module level
+- Created src/circular_dep.rs with:
+  - `ModuleCycle` struct: contains sorted list of module names in a cycle
+  - `detect_module_cycles()` — takes file-level import graph + module boundaries, lifts to module edges, finds SCCs
+  - `build_file_to_module_map()` — maps each file path to its owning module name
+  - `build_module_adjacency()` — lifts file-level edges to module-level edges, excludes intra-module imports
+  - `tarjan_scc()` — Tarjan's strongly connected components (same pattern as cycle_detect.rs)
+- 12 tests covering: empty graph, DAG, 2-module cycle, 3-module cycle, multiple independent cycles, intra-module imports (not cycles), mixed DAG+cycle, orphan files, single module, multiple file edges creating one module edge, cycle via cross-file edges, integration with realistic project structure
+
+### Current State
+- Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
+- Full test suite: 1049 passed, 0 failed, 1 ignored
+- circular_dep module ready for downstream beads (structural metrics aggregator)
+
+### Suggested Next Tasks
+- simple-agent-harness-aol (P2): Add boundary violation detector for module imports
+- simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
+- simple-agent-harness-a9n (P2): Implement structural metrics aggregator (blocked until more metrics done)

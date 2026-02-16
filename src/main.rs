@@ -1,5 +1,6 @@
 mod adapters;
 mod brief;
+mod circular_dep;
 mod commit;
 mod compress;
 mod config;
