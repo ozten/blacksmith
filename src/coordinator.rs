@@ -4,15 +4,12 @@
 /// It reads ready beads, uses the scheduler to find non-conflicting assignments,
 /// spawns workers in git worktrees, and polls for completions.
 /// Completed workers are queued for sequential integration into main.
-use crate::architecture_runner::{ArchitectureRunner, RunOutcome, TriggerContext};
 use crate::config::HarnessConfig;
 use crate::cycle_detect;
 use crate::data_dir::DataDir;
 use crate::db;
 use crate::estimation::BeadNode;
 use crate::integrator::{CircuitBreaker, IntegrationQueue, TrippedFailure};
-use crate::migration_apply;
-use crate::migration_map;
 use crate::pool::{PoolError, WorkerPool};
 use crate::scheduler::{self, InProgressAssignment, ReadyBead};
 use crate::signals::SignalHandler;
@@ -96,7 +93,6 @@ pub async fn run(
         repo_dir.clone(),
         worktrees_dir,
         initial_session_id,
-        Some(data_dir.skills_dir()),
     );
     let output_dir = data_dir.sessions_dir();
     let integration_queue =
@@ -117,7 +113,6 @@ pub async fn run(
     let mut failed_beads = 0u32;
     let mut consecutive_no_work = 0u32;
     const MAX_CONSECUTIVE_NO_WORK: u32 = 3;
-    let mut arch_runner = ArchitectureRunner::new(&config.architecture);
 
     tracing::info!(
         max_workers = config.workers.max,
@@ -133,10 +128,7 @@ pub async fn run(
     // No workers are active yet, so every existing worktree is orphaned.
     match worktree::cleanup_orphans(&repo_dir, pool.worktrees_dir(), &[]) {
         Ok(cleaned) if !cleaned.is_empty() => {
-            tracing::info!(
-                count = cleaned.len(),
-                "cleaned up stale worktrees from previous run"
-            );
+            tracing::info!(count = cleaned.len(), "cleaned up stale worktrees from previous run");
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to clean up stale worktrees");
@@ -224,82 +216,6 @@ pub async fn run(
                         commit = ?result.merge_commit,
                         "integration succeeded"
                     );
-
-                    // Apply migration map to in-progress worktrees
-                    if let Some(ref merge_commit) = result.merge_commit {
-                        apply_migration_to_in_progress_worktrees(
-                            &pool,
-                            &repo_dir,
-                            merge_commit,
-                            &config.workers.base_branch,
-                        );
-
-                        // Post-integration metadata hooks: invalidate stale Layer 2 cache,
-                        // and eagerly regenerate if this was a refactor integration.
-                        let is_refactor = is_refactor_bead(&bead_id);
-                        let pending_ids = if is_refactor {
-                            query_pending_task_ids()
-                        } else {
-                            Vec::new()
-                        };
-                        let pending_refs: Vec<&str> =
-                            pending_ids.iter().map(|s| s.as_str()).collect();
-                        let drift_reports =
-                            integration_queue.post_integration_hooks_with_threshold(
-                                merge_commit,
-                                is_refactor,
-                                &pending_refs,
-                                &db_conn,
-                                Some(config.architecture.metadata_drift_sensitivity),
-                            );
-
-                        // Drift-triggered architecture review: if any concepts drifted
-                        // above threshold, run the architecture pipeline immediately.
-                        // Only process the first drift report to avoid infinite loops
-                        // (drift-triggered analysis doesn't trigger more drift checks).
-                        if let Some(drift_report) = drift_reports.into_iter().next() {
-                            tracing::info!(
-                                task_id = %drift_report.task_id,
-                                drifted_concepts = drift_report.drifted_concepts.len(),
-                                "metadata drift detected, triggering architecture review"
-                            );
-                            let trigger = TriggerContext::MetadataDrift { drift_report };
-                            match arch_runner.run_if_needed(
-                                trigger,
-                                &repo_dir,
-                                &db_conn,
-                                &config.architecture,
-                            ) {
-                                RunOutcome::Ran(report) => {
-                                    tracing::info!(
-                                        proposals = report.proposals.len(),
-                                        "architecture review completed after drift detection"
-                                    );
-                                }
-                                RunOutcome::Skipped { .. } => {}
-                            }
-                        }
-                    }
-
-                    // Check if architecture review is needed after this integration
-                    let trigger = TriggerContext::TaskCompleted {
-                        completed_count: completed_beads,
-                    };
-                    match arch_runner.run_if_needed(
-                        trigger,
-                        &repo_dir,
-                        &db_conn,
-                        &config.architecture,
-                    ) {
-                        RunOutcome::Ran(report) => {
-                            tracing::info!(
-                                proposals = report.proposals.len(),
-                                "architecture review completed after integration"
-                            );
-                        }
-                        RunOutcome::Skipped { .. } => {}
-                    }
-
                     // Reset the worker back to idle after successful integration
                     if let Err(e) = pool.reset_worker(worker_id) {
                         tracing::warn!(error = %e, worker_id, "failed to reset worker after integration");
@@ -831,146 +747,6 @@ fn handle_tripped_failure(tripped: &TrippedFailure) {
     }
 }
 
-/// Check whether a bead is a refactor task by querying its issue_type.
-///
-/// Shells out to `bd show <id> --json` and checks if `issue_type` contains "refactor".
-/// Returns `false` on any error (fail-open: non-refactor is the safe default).
-fn is_refactor_bead(bead_id: &str) -> bool {
-    let output = match std::process::Command::new("bd")
-        .args(["show", bead_id, "--json"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(&json_str);
-    match parsed {
-        Ok(beads) => beads
-            .first()
-            .and_then(|b| b.get("issue_type"))
-            .and_then(|v| v.as_str())
-            .map(|t| t.contains("refactor"))
-            .unwrap_or(false),
-        Err(_) => false,
-    }
-}
-
-/// Query all open/in-progress task IDs for use in refactor metadata regeneration.
-///
-/// Returns bead IDs that have pending work (open or in_progress status).
-/// On error, returns an empty list (regeneration is best-effort).
-fn query_pending_task_ids() -> Vec<String> {
-    let output = match std::process::Command::new("bd")
-        .args(["list", "--status=open", "--json"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return Vec::new(),
-    };
-
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(&json_str);
-    match parsed {
-        Ok(beads) => beads
-            .iter()
-            .filter_map(|b| b.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
-            .collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// After a successful integration, detect if the integrated commit contains file renames
-/// and apply migration maps to all in-progress worktrees.
-///
-/// This is the "Handling the In-Progress Agent" flow:
-/// 1. Generate a migration map from the integration commit
-/// 2. For each in-progress worktree, apply the map (relocate imports, merge main, fix loop)
-/// 3. If the fix loop fails, log a warning (the agent will deal with errors at integration time)
-fn apply_migration_to_in_progress_worktrees(
-    pool: &WorkerPool,
-    repo_dir: &std::path::Path,
-    merge_commit: &str,
-    base_branch: &str,
-) {
-    let in_progress = pool.in_progress_worktrees();
-    if in_progress.is_empty() {
-        return;
-    }
-
-    // Find the parent commit (before the integration) to diff against
-    let parent_output = std::process::Command::new("git")
-        .args(["rev-parse", &format!("{merge_commit}^")])
-        .current_dir(repo_dir)
-        .output();
-
-    let parent_commit = match parent_output {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        }
-        _ => {
-            tracing::debug!("could not determine parent commit for migration map, skipping");
-            return;
-        }
-    };
-
-    // Generate migration map from the integration diff
-    let migration_map =
-        match migration_map::generate_migration_map(repo_dir, &parent_commit, merge_commit) {
-            Ok(map) => map,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to generate migration map, skipping");
-                return;
-            }
-        };
-
-    if migration_map.is_empty() {
-        tracing::debug!("migration map is empty (no renames), skipping worktree updates");
-        return;
-    }
-
-    tracing::info!(
-        file_moves = migration_map.file_moves.len(),
-        symbol_relocations = migration_map.symbol_relocations.len(),
-        in_progress_worktrees = in_progress.len(),
-        "applying migration map to in-progress worktrees"
-    );
-
-    for (worker_id, worktree_path) in &in_progress {
-        match migration_apply::apply_migration_map(&migration_map, worktree_path, base_branch) {
-            Ok(result) => {
-                tracing::info!(
-                    worker_id,
-                    files_modified = result.files_modified,
-                    replacements = result.replacements_made,
-                    fix_iterations = result.fix_iterations,
-                    cargo_check_passed = result.cargo_check_passed,
-                    "migration map applied to in-progress worktree"
-                );
-            }
-            Err(migration_apply::MigrationApplyError::FixLoopExhausted {
-                iterations,
-                ref last_errors,
-            }) => {
-                tracing::warn!(
-                    worker_id,
-                    iterations,
-                    errors = %last_errors,
-                    "migration fix loop exhausted for in-progress worktree, agent will need to handle errors"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    worker_id,
-                    error = %e,
-                    "failed to apply migration map to in-progress worktree"
-                );
-            }
-        }
-    }
-}
-
 /// Extension trait for StopFileStatus (same as in runner.rs).
 trait StopFileStatusExt {
     fn is_detected(&self) -> bool;
@@ -1049,7 +825,6 @@ mod tests {
             },
             reconciliation: ReconciliationConfig::default(),
             architecture: ArchitectureConfig::default(),
-            finish: FinishConfig::default(),
         }
     }
 
@@ -1178,7 +953,7 @@ mod tests {
             base_branch: "main".to_string(),
             worktrees_dir: "worktrees".to_string(),
         };
-        let pool = WorkerPool::new(&config, dir.path().to_path_buf(), wt_dir, 0, None);
+        let pool = WorkerPool::new(&config, dir.path().to_path_buf(), wt_dir, 0);
         let db_path = dir.path().join("test.db");
         let db_conn = db::open_or_create(&db_path).unwrap();
         let in_progress = build_in_progress_list(&pool, &db_conn);
@@ -1367,7 +1142,7 @@ mod tests {
             base_branch: "main".to_string(),
             worktrees_dir: "worktrees".to_string(),
         };
-        let mut pool = WorkerPool::new(&workers_config, repo.to_path_buf(), wt_dir, 0, None);
+        let mut pool = WorkerPool::new(&workers_config, repo.to_path_buf(), wt_dir, 0);
 
         // Use set_worker_for_test to set up the coding state
         pool.set_worker_state_for_test(
@@ -1430,7 +1205,6 @@ mod tests {
             dir.path().to_path_buf(),
             dir.path().join("wt"),
             0,
-            None,
         );
         pool.set_worker_state_for_test(
             0,
@@ -1490,7 +1264,6 @@ mod tests {
             dir.path().to_path_buf(),
             dir.path().join("wt"),
             0,
-            None,
         );
         pool.set_worker_state_for_test(
             0,
@@ -1544,7 +1317,6 @@ mod tests {
             dir.path().to_path_buf(),
             dir.path().join("wt"),
             0,
-            None,
         );
         pool.set_worker_state_for_test(
             0,
@@ -1599,7 +1371,6 @@ mod tests {
             dir.path().to_path_buf(),
             dir.path().join("wt"),
             0,
-            None,
         );
         pool.set_worker_state_for_test(
             0,

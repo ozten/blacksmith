@@ -1,6 +1,4 @@
 mod adapters;
-mod architecture_pipeline;
-mod architecture_runner;
 mod boundary_violation;
 mod brief;
 mod circular_dep;
@@ -11,12 +9,10 @@ mod coordinator;
 mod cycle_detect;
 mod data_dir;
 mod db;
-mod defaults;
 mod estimation;
 mod expansion_event;
 mod fan_in;
 mod file_resolution;
-mod finish;
 mod gc;
 mod god_file;
 mod hooks;
@@ -29,12 +25,9 @@ mod metadata_regen;
 mod metrics;
 mod metrics_cmd;
 mod migrate;
-mod migration_apply;
-mod migration_map;
 mod module_detect;
 mod pool;
 mod prompt;
-mod proposal_generation;
 mod proposal_validation;
 mod public_api;
 mod ratelimit;
@@ -110,14 +103,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Initialize the .blacksmith/ data directory
-    Init {
-        /// Overwrite existing files with fresh defaults
-        #[arg(long)]
-        force: bool,
-        /// Copy PROMPT.md and skills/ to project root
-        #[arg(long = "export")]
-        export_files: bool,
-    },
+    Init,
     /// Generate performance brief for prompt injection
     Brief,
     /// Manage improvement records (institutional memory)
@@ -165,15 +151,6 @@ enum Commands {
     Adapter {
         #[command(subcommand)]
         action: AdapterAction,
-    },
-    /// Close a bead: run quality gates, commit, bd close, sync, push
-    Finish {
-        /// Bead ID to close (e.g. simple-agent-harness-abc)
-        bead_id: String,
-        /// Commit message describing the work done
-        message: String,
-        /// Specific files to stage (if omitted, runs git add -u)
-        files: Vec<String>,
     },
 }
 
@@ -829,59 +806,21 @@ async fn main() {
     tracing::debug!(?cli, "parsed CLI arguments");
 
     // Handle subcommands that don't need the full config
-    if let Some(Commands::Init {
-        force,
-        export_files,
-    }) = &cli.command
-    {
+    if let Some(Commands::Init) = &cli.command {
         let config = HarnessConfig::load(&cli.config).unwrap_or_default();
         let dd = data_dir::DataDir::new(&config.storage.data_dir);
-
-        // Always ensure base directory structure exists
-        if let Err(e) = dd.ensure_initialized() {
-            eprintln!("Error initializing data directory: {e}");
-            std::process::exit(1);
-        }
-        println!("Created: {}", config.storage.data_dir.display());
-
-        // --force: overwrite existing files with fresh defaults
-        if *force {
-            match dd.force_extract() {
-                Ok(overwritten) => {
-                    if overwritten.is_empty() {
-                        println!("Overwrote: (no existing files to overwrite)");
-                    } else {
-                        for path in &overwritten {
-                            println!("Overwrote: {}", path.display());
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error force-extracting defaults: {e}");
-                    std::process::exit(1);
-                }
+        match dd.ensure_initialized() {
+            Ok(()) => {
+                println!(
+                    "Initialized data directory: {}",
+                    config.storage.data_dir.display()
+                );
+            }
+            Err(e) => {
+                eprintln!("Error initializing data directory: {e}");
+                std::process::exit(1);
             }
         }
-
-        // --export: copy PROMPT.md and skills/ to project root
-        if *export_files {
-            match dd.export_to_root() {
-                Ok(exported) => {
-                    if exported.is_empty() {
-                        println!("Exported: (nothing to export)");
-                    } else {
-                        for path in &exported {
-                            println!("Exported: {}", path.display());
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error exporting files: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-
         return;
     }
 
@@ -1021,20 +960,6 @@ async fn main() {
 
         if let Err(e) = result {
             eprintln!("Error: {e}");
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    if let Some(Commands::Finish {
-        bead_id,
-        message,
-        files,
-    }) = &cli.command
-    {
-        let config_for_finish = HarnessConfig::load(&cli.config).unwrap_or_default();
-        if let Err(e) = finish::handle_finish(bead_id, message, files, &config_for_finish.finish) {
-            eprintln!("{e}");
             std::process::exit(1);
         }
         return;

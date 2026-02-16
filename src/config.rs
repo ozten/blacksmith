@@ -22,7 +22,6 @@ pub struct HarnessConfig {
     pub workers: WorkersConfig,
     pub reconciliation: ReconciliationConfig,
     pub architecture: ArchitectureConfig,
-    pub finish: FinishConfig,
 }
 
 impl HarnessConfig {
@@ -499,35 +498,6 @@ impl Default for ReconciliationConfig {
     }
 }
 
-/// Quality gate commands for the finish subcommand.
-///
-/// These commands are run before closing a bead to ensure code quality.
-/// Defaults match Rust projects (cargo check, cargo test).
-/// Override for other languages (e.g., tsc/jest for TypeScript, go vet/go test for Go).
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
-pub struct FinishConfig {
-    /// Compilation/type-check command. Default: "cargo check"
-    pub check: String,
-    /// Test command. Default: "cargo test"
-    pub test: String,
-    /// Optional lint command. Not run if None.
-    pub lint: Option<String>,
-    /// Optional format-check command. Not run if None.
-    pub format: Option<String>,
-}
-
-impl Default for FinishConfig {
-    fn default() -> Self {
-        Self {
-            check: "cargo check".to_string(),
-            test: "cargo test".to_string(),
-            lint: None,
-            format: None,
-        }
-    }
-}
-
 /// Configuration knobs for the architecture agent.
 ///
 /// These control how aggressively the architecture agent flags issues
@@ -557,13 +527,6 @@ pub struct ArchitectureConfig {
     /// automatically approved and queued, or require human confirmation.
     /// Default: false
     pub refactor_auto_approve: bool,
-    /// Number of completed task integrations between periodic architecture
-    /// reviews. Set to 0 to disable periodic reviews. Default: 10
-    pub arch_review_interval: u32,
-    /// Average integration iteration count threshold. When the rolling
-    /// average of iterations across recent tasks exceeds this value,
-    /// an architecture review is triggered. Default: 3.0
-    pub integration_iteration_threshold: f64,
 }
 
 impl Default for ArchitectureConfig {
@@ -575,8 +538,6 @@ impl Default for ArchitectureConfig {
             expansion_event_window: 20,
             metadata_drift_sensitivity: 3.0,
             refactor_auto_approve: false,
-            arch_review_interval: 10,
-            integration_iteration_threshold: 3.0,
         }
     }
 }
@@ -592,8 +553,6 @@ impl ArchitectureConfig {
             expansion_event_window: 30,
             metadata_drift_sensitivity: 5.0,
             refactor_auto_approve: false,
-            arch_review_interval: 20,
-            integration_iteration_threshold: 5.0,
         }
     }
 
@@ -606,8 +565,6 @@ impl ArchitectureConfig {
             expansion_event_window: 15,
             metadata_drift_sensitivity: 2.0,
             refactor_auto_approve: true,
-            arch_review_interval: 5,
-            integration_iteration_threshold: 2.0,
         }
     }
 }
@@ -2389,77 +2346,5 @@ refactor_auto_approve = true
             "unexpected architecture errors: {:?}",
             errors
         );
-    }
-
-    // --- Finish config tests ---
-
-    #[test]
-    fn test_default_finish_config() {
-        let config = HarnessConfig::default();
-        assert_eq!(config.finish.check, "cargo check");
-        assert_eq!(config.finish.test, "cargo test");
-        assert!(config.finish.lint.is_none());
-        assert!(config.finish.format.is_none());
-    }
-
-    #[test]
-    fn test_load_finish_from_toml() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("blacksmith.toml");
-        std::fs::write(
-            &path,
-            r#"
-[finish]
-check = "tsc --noEmit"
-test = "jest"
-lint = "eslint ."
-format = "prettier --check ."
-"#,
-        )
-        .unwrap();
-        let config = HarnessConfig::load(&path).unwrap();
-        assert_eq!(config.finish.check, "tsc --noEmit");
-        assert_eq!(config.finish.test, "jest");
-        assert_eq!(config.finish.lint, Some("eslint .".to_string()));
-        assert_eq!(config.finish.format, Some("prettier --check .".to_string()));
-    }
-
-    #[test]
-    fn test_finish_defaults_when_not_specified() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("blacksmith.toml");
-        std::fs::write(
-            &path,
-            r#"
-[session]
-max_iterations = 10
-"#,
-        )
-        .unwrap();
-        let config = HarnessConfig::load(&path).unwrap();
-        assert_eq!(config.finish.check, "cargo check");
-        assert_eq!(config.finish.test, "cargo test");
-        assert!(config.finish.lint.is_none());
-        assert!(config.finish.format.is_none());
-    }
-
-    #[test]
-    fn test_finish_partial_override() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("blacksmith.toml");
-        std::fs::write(
-            &path,
-            r#"
-[finish]
-check = "go vet ./..."
-test = "go test ./..."
-"#,
-        )
-        .unwrap();
-        let config = HarnessConfig::load(&path).unwrap();
-        assert_eq!(config.finish.check, "go vet ./...");
-        assert_eq!(config.finish.test, "go test ./...");
-        assert!(config.finish.lint.is_none());
-        assert!(config.finish.format.is_none());
     }
 }
