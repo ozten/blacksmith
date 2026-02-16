@@ -244,12 +244,41 @@ pub async fn run(
                         };
                         let pending_refs: Vec<&str> =
                             pending_ids.iter().map(|s| s.as_str()).collect();
-                        integration_queue.post_integration_hooks(
-                            merge_commit,
-                            is_refactor,
-                            &pending_refs,
-                            &db_conn,
-                        );
+                        let drift_reports =
+                            integration_queue.post_integration_hooks_with_threshold(
+                                merge_commit,
+                                is_refactor,
+                                &pending_refs,
+                                &db_conn,
+                                Some(config.architecture.metadata_drift_sensitivity),
+                            );
+
+                        // Drift-triggered architecture review: if any concepts drifted
+                        // above threshold, run the architecture pipeline immediately.
+                        // Only process the first drift report to avoid infinite loops
+                        // (drift-triggered analysis doesn't trigger more drift checks).
+                        if let Some(drift_report) = drift_reports.into_iter().next() {
+                            tracing::info!(
+                                task_id = %drift_report.task_id,
+                                drifted_concepts = drift_report.drifted_concepts.len(),
+                                "metadata drift detected, triggering architecture review"
+                            );
+                            let trigger = TriggerContext::MetadataDrift { drift_report };
+                            match arch_runner.run_if_needed(
+                                trigger,
+                                &repo_dir,
+                                &db_conn,
+                                &config.architecture,
+                            ) {
+                                RunOutcome::Ran(report) => {
+                                    tracing::info!(
+                                        proposals = report.proposals.len(),
+                                        "architecture review completed after drift detection"
+                                    );
+                                }
+                                RunOutcome::Skipped { .. } => {}
+                            }
+                        }
                     }
 
                     // Check if architecture review is needed after this integration

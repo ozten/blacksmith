@@ -18,6 +18,7 @@ use rusqlite::Connection;
 use crate::architecture_pipeline::{self, PipelineReport};
 use crate::config::ArchitectureConfig;
 use crate::expansion_event;
+use crate::metadata_regen::DriftReport;
 
 /// Context passed to `run_if_needed` describing what triggered the check.
 #[derive(Debug)]
@@ -27,6 +28,9 @@ pub enum TriggerContext {
     TaskCompleted { completed_count: u32 },
     /// Explicit pre-planning trigger with a feature description.
     PrePlanning { feature_description: String },
+    /// Metadata drift detected after refactor regeneration. The drifting
+    /// concepts are passed to the architecture pipeline as analysis context.
+    MetadataDrift { drift_report: DriftReport },
 }
 
 /// Result from the architecture runner indicating what happened.
@@ -87,6 +91,19 @@ impl ArchitectureRunner {
                 tracing::info!(
                     feature = %feature_description,
                     "architecture runner: pre-planning trigger, running pipeline"
+                );
+                self.completions_since_last_run = 0;
+                let report =
+                    architecture_pipeline::run_architecture_pipeline(repo_root, db_conn, config);
+                log_report_summary(&report);
+                RunOutcome::Ran(report)
+            }
+            TriggerContext::MetadataDrift { drift_report } => {
+                tracing::info!(
+                    task_id = %drift_report.task_id,
+                    drifted_concepts = drift_report.drifted_concepts.len(),
+                    summary = %drift_report.summary(),
+                    "architecture runner: metadata drift trigger, running pipeline"
                 );
                 self.completions_since_last_run = 0;
                 let report =
@@ -370,5 +387,84 @@ mod tests {
         }
         let avg = average_recent_iterations(&conn, 20).unwrap();
         assert!((avg - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn drift_triggered_review() {
+        let conn = setup_db();
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config();
+        let mut runner = ArchitectureRunner::new(&config);
+
+        // Create a DriftReport with concepts that drifted above threshold
+        let drift_report = DriftReport {
+            task_id: "task-drift-1".to_string(),
+            threshold: 3.0,
+            drifted_concepts: vec![
+                crate::metadata_regen::ConceptDrift {
+                    concept: "auth_endpoints".to_string(),
+                    old_file_count: 3,
+                    new_file_count: 12,
+                },
+            ],
+            old_total_files: 3,
+            new_total_files: 12,
+        };
+
+        // Drift trigger should always run the pipeline (like PrePlanning)
+        let outcome = runner.run_if_needed(
+            TriggerContext::MetadataDrift { drift_report },
+            dir.path(),
+            &conn,
+            &config,
+        );
+        assert!(matches!(outcome, RunOutcome::Ran(_)));
+    }
+
+    #[test]
+    fn drift_trigger_resets_completion_counter() {
+        let conn = setup_db();
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_config();
+        let mut runner = ArchitectureRunner::new(&config);
+
+        // Simulate 2 completions (below periodic threshold of 3)
+        let _ = runner.run_if_needed(
+            TriggerContext::TaskCompleted { completed_count: 2 },
+            dir.path(),
+            &conn,
+            &config,
+        );
+
+        // Fire a drift trigger — should run and reset counter
+        let drift_report = DriftReport {
+            task_id: "task-drift-2".to_string(),
+            threshold: 3.0,
+            drifted_concepts: vec![
+                crate::metadata_regen::ConceptDrift {
+                    concept: "db_layer".to_string(),
+                    old_file_count: 2,
+                    new_file_count: 8,
+                },
+            ],
+            old_total_files: 2,
+            new_total_files: 8,
+        };
+        let outcome = runner.run_if_needed(
+            TriggerContext::MetadataDrift { drift_report },
+            dir.path(),
+            &conn,
+            &config,
+        );
+        assert!(matches!(outcome, RunOutcome::Ran(_)));
+
+        // Counter was reset to 0, so 2 completions should NOT trigger periodic
+        let outcome = runner.run_if_needed(
+            TriggerContext::TaskCompleted { completed_count: 2 },
+            dir.path(),
+            &conn,
+            &config,
+        );
+        assert!(matches!(outcome, RunOutcome::Skipped { .. }));
     }
 }

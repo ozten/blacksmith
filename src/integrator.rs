@@ -1032,7 +1032,25 @@ impl IntegrationQueue {
         is_refactor: bool,
         pending_task_ids: &[&str],
         db_conn: &Connection,
-    ) {
+    ) -> Vec<metadata_regen::DriftReport> {
+        self.post_integration_hooks_with_threshold(
+            new_commit,
+            is_refactor,
+            pending_task_ids,
+            db_conn,
+            None,
+        )
+    }
+
+    /// Like `post_integration_hooks` but with a configurable drift threshold.
+    pub fn post_integration_hooks_with_threshold(
+        &self,
+        new_commit: &str,
+        is_refactor: bool,
+        pending_task_ids: &[&str],
+        db_conn: &Connection,
+        drift_threshold: Option<f64>,
+    ) -> Vec<metadata_regen::DriftReport> {
         // Lazy invalidation: delete stale Layer 2 cache entries
         match metadata_regen::invalidate_on_integration(db_conn, new_commit) {
             Ok(count) => {
@@ -1060,11 +1078,12 @@ impl IntegrationQueue {
                 new_commit,
                 "refactor integration detected, regenerating metadata for pending tasks"
             );
-            match metadata_regen::regenerate_after_refactor(
+            match metadata_regen::regenerate_after_refactor_with_threshold(
                 db_conn,
                 &self.repo_dir,
                 new_commit,
                 pending_task_ids,
+                drift_threshold,
             ) {
                 Ok(report) => {
                     tracing::info!(
@@ -1072,8 +1091,10 @@ impl IntegrationQueue {
                         regenerated = report.regenerated,
                         already_fresh = report.already_fresh,
                         skipped_no_intent = report.skipped_no_intent,
+                        drift_detected = report.drift_reports.len(),
                         "refactor metadata regeneration complete"
                     );
+                    return report.drift_reports;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1083,6 +1104,8 @@ impl IntegrationQueue {
                 }
             }
         }
+
+        Vec::new()
     }
 
     /// Record a failed integration in the database.
