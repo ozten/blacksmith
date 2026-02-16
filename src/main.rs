@@ -29,6 +29,7 @@ mod migrate;
 mod module_detect;
 mod pool;
 mod prompt;
+mod proposal_generation;
 mod proposal_validation;
 mod public_api;
 mod ratelimit;
@@ -805,16 +806,20 @@ fn handle_adapter_test(
 fn print_arch_json(
     report: &structural_metrics::StructuralReport,
     correlation: &Option<signal_correlator::CorrelationReport>,
+    proposals: &Option<Vec<proposal_validation::RefactorProposal>>,
 ) {
     #[derive(serde::Serialize)]
     struct JsonOutput<'a> {
         structural: &'a structural_metrics::StructuralReport,
         #[serde(skip_serializing_if = "Option::is_none")]
         correlation: &'a Option<signal_correlator::CorrelationReport>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        proposals: &'a Option<Vec<proposal_validation::RefactorProposal>>,
     }
     let output = JsonOutput {
         structural: report,
         correlation,
+        proposals,
     };
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }
@@ -822,6 +827,7 @@ fn print_arch_json(
 fn print_arch_text(
     report: &structural_metrics::StructuralReport,
     correlation: &Option<signal_correlator::CorrelationReport>,
+    proposals: &Option<Vec<proposal_validation::RefactorProposal>>,
 ) {
     println!("=== Architecture Analysis ===\n");
     println!(
@@ -953,6 +959,42 @@ fn print_arch_text(
         }
     } else {
         println!("\n(No database found — signal correlation skipped)");
+    }
+
+    // -- Proposals --
+    if let Some(props) = proposals {
+        if props.is_empty() {
+            println!("\n  No refactoring proposals generated.");
+        } else {
+            println!("\n--- Refactoring Proposals ---");
+            for (i, p) in props.iter().enumerate() {
+                let kind = match p.kind {
+                    proposal_validation::ProposalKind::SplitModule => "SplitModule",
+                    proposal_validation::ProposalKind::ExtractInterface => "ExtractInterface",
+                    proposal_validation::ProposalKind::MoveFiles => "MoveFiles",
+                    proposal_validation::ProposalKind::BreakCycle => "BreakCycle",
+                };
+                println!(
+                    "\n  {}. {} → {} (from candidate '{}'  score {:.1})",
+                    i + 1,
+                    kind,
+                    p.target_module,
+                    p.candidate.module,
+                    p.candidate.combined_score
+                );
+                if !p.proposed_modules.is_empty() {
+                    println!("     New modules: {}", p.proposed_modules.join(", "));
+                }
+                println!(
+                    "     Affected files: {}",
+                    p.affected_files
+                        .iter()
+                        .map(|f| f.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
     }
 }
 
@@ -1108,6 +1150,7 @@ async fn main() {
         });
 
         let report = structural_metrics::analyze(&repo_root);
+        let modules = module_detect::detect_modules_from_repo(&repo_root);
 
         // Try signal correlation if DB exists
         let correlation = if db_path.exists() {
@@ -1132,10 +1175,15 @@ async fn main() {
             None
         };
 
+        // Generate proposals from candidates
+        let proposals = correlation.as_ref().map(|corr| {
+            proposal_generation::generate_proposals(&corr.candidates, &report, &modules)
+        });
+
         if *json {
-            print_arch_json(&report, &correlation);
+            print_arch_json(&report, &correlation, &proposals);
         } else {
-            print_arch_text(&report, &correlation);
+            print_arch_text(&report, &correlation, &proposals);
         }
         return;
     }
