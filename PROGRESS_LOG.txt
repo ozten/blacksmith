@@ -2407,3 +2407,30 @@
 - simple-agent-harness-aol (P2): Add boundary violation detector for module imports
 - simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
 - simple-agent-harness-a9n (P2): Implement structural metrics aggregator (blocked until more metrics done)
+
+--- 2026-02-16 00:11:57 | simple-agent-harness-9xc ---
+## Last Session: Add god file detection via cohesion analysis (2026-02-16)
+
+### What Was Done
+- Implemented bead simple-agent-harness-9xc: god file detection via cohesion analysis
+- Created src/god_file.rs with:
+  - `GodFileEntry` struct: file, line_count, symbol_count, cluster_count, clusters
+  - `GodFileConfig` struct: min_lines (default 200), min_clusters (default 3)
+  - `detect_god_files()` — scans files, filters by line threshold, computes cohesion clusters
+  - `analyze_file()` — extracts all symbols (pub+private), builds reference graph, finds connected components
+  - `extract_all_defined_symbols()` — parses fn/struct/enum/trait/const/static/type/impl definitions with line ranges
+  - `compute_symbol_clusters()` — builds adjacency via word-boundary cross-references, merges impl blocks with their structs, finds connected components via BFS
+  - `contains_word()` — word-boundary-aware text search
+  - Noise filtering: common Rust names (new, default, from, etc.) excluded from cross-references to avoid false positives
+- 13 tests covering: small files, single concern, multiple concerns, cluster analysis, connected symbols, impl block merging, empty files, word boundary matching, severity sorting, defaults, definition end detection, symbol extraction
+
+### Current State
+- Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
+- Full test suite: 1037 passed, 0 failed, 1 ignored
+- god_file module ready for downstream beads (structural metrics aggregator)
+
+### Suggested Next Tasks
+- simple-agent-harness-33k (P2): Add circular dependency detection for modules
+- simple-agent-harness-aol (P2): Add boundary violation detector for module imports
+- simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
+- simple-agent-harness-a9n (P2): Implement structural metrics aggregator (blocked until more metrics done)

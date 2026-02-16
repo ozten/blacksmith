@@ -12,6 +12,7 @@ mod expansion_event;
 mod fan_in;
 mod file_resolution;
 mod gc;
+mod god_file;
 mod hooks;
 mod import_graph;
 mod improve;
