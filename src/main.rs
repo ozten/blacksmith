@@ -35,6 +35,7 @@ mod retry;
 mod runner;
 mod scheduler;
 mod session;
+mod signal_correlator;
 mod signals;
 mod singleton;
 mod status;

@@ -1,24 +1,24 @@
-## Last Session: Implement structural metrics aggregator (2026-02-16)
+## Last Session: Implement historical signal correlator (2026-02-16)
 
 ### What Was Done
-- Implemented bead simple-agent-harness-a9n (P2): Structural metrics aggregator
-- Created `src/structural_metrics.rs` with `analyze()` function that computes all structural metrics in one pass:
-  - Fan-in scores (via `fan_in::scores_from_graph`)
-  - File sizes (line counts per file)
-  - Cohesion/god file detection (via `god_file::detect_god_files`)
-  - Cycle participation (via `circular_dep::detect_module_cycles`)
-  - API surface width (via `public_api::extract_public_apis`)
-  - Boundary violations (via `boundary_violation::detect_boundary_violations`)
-- Returns a `StructuralReport` with `ModuleMetrics` (per-module) and `FileMetrics` (per-file)
-- Added `mod structural_metrics;` to main.rs
-- 11 unit tests all passing, full suite: 1111 passed, 0 failed
+- Implemented bead simple-agent-harness-4wc (P2): Historical signal correlator
+- Created `src/signal_correlator.rs` with `correlate()` function that:
+  - Queries expansion events per module from DB with recency weighting (recent window gets 2x weight)
+  - Queries integration iteration counts per module from DB with recency weighting
+  - Queries metadata drift counts per module from file_resolutions table
+  - Computes structural smell flags per module (high fan-in, large module, cycle participation, boundary violations, god files, wide API)
+  - Identifies modules with BOTH structural smells AND historical failure signals as refactoring candidates
+  - Sorts candidates by combined score, computes confidence based on number of independent signal types
+- Returns a `CorrelationReport` with `ModuleSignals`, `StructuralSmells`, and `RefactorCandidate` per module
+- Added `mod signal_correlator;` to main.rs
+- 12 unit tests all passing, full suite: 1123 passed, 0 failed
 
 ### Current State
 - Codebase compiles cleanly (only pre-existing dead_code warnings for not-yet-wired modules)
-- All 1111 tests pass
-- structural_metrics module is ready to be consumed by the historical signal correlator
+- All 1123 tests pass
+- signal_correlator module is ready to be consumed by the refactor proposal generator
 
 ### Suggested Next Tasks
-- simple-agent-harness-4wc (P2): Implement historical signal correlator (blocked by this bead, now unblocked)
+- simple-agent-harness-cgo (P2): Add refactor proposal generation (blocked by this bead, now unblocked)
 - simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
 - simple-agent-harness-34d (P3): Add architecture agent configuration knobs
