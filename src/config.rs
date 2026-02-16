@@ -300,7 +300,7 @@ where
 }
 
 /// How the assembled prompt is delivered to the agent subprocess.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PromptVia {
     /// Substitute `{prompt}` placeholders in the agent args (default, existing behavior).
     #[default]
