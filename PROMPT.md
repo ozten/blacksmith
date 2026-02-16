@@ -54,6 +54,12 @@ Before claiming a task, run `bd show <id>` and check its notes for `[FAILED-ATTE
 
 If ALL top-priority ready beads have 2+ failures and you've decomposed them, move to the next priority level.
 
+### No Work Available
+If `bd ready` returns no tasks, exit immediately:
+1. Do NOT create any git commits
+2. Do NOT write PROGRESS.txt
+3. Simply exit — the harness will handle retry/shutdown
+
 ## Execution Protocol
 For the selected task (e.g., bd-X):
 

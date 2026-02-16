@@ -817,6 +817,7 @@ async fn run_session_with_watchdog(
 
     let mut child = tokio::process::Command::new(&resolved_agent.command)
         .args(&args)
+        .envs(&resolved_agent.env)
         .stdin(stdin_mode)
         .stdout(std::process::Stdio::from(output_file))
         .stderr(std::process::Stdio::from(output_file_stderr))

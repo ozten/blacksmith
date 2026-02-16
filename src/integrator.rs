@@ -795,6 +795,7 @@ impl IntegrationQueue {
 
         let output = Command::new(&agent_config.command)
             .args(&args)
+            .envs(&agent_config.env)
             .current_dir(worktree_path)
             .output()
             .map_err(|e| {
@@ -1104,6 +1105,7 @@ fn is_leap_year(y: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::process::Command as StdCommand;
     use std::process::Stdio;
     use tempfile::TempDir;
@@ -1735,6 +1737,7 @@ edition = "2021"
             args: vec!["fixing: {prompt}".to_string()],
             adapter: None,
             prompt_via: crate::config::PromptVia::Arg,
+            env: HashMap::new(),
         };
 
         let result = queue.spawn_integration_agent_sync(&agent, repo_dir, "test errors");
@@ -1753,6 +1756,7 @@ edition = "2021"
             args: vec![],
             adapter: None,
             prompt_via: crate::config::PromptVia::Arg,
+            env: HashMap::new(),
         };
 
         let result = queue.spawn_integration_agent_sync(&agent, repo_dir, "test");
@@ -1987,6 +1991,7 @@ mod tests {
             args: vec!["should-not-run".to_string()],
             adapter: None,
             prompt_via: crate::config::PromptVia::Arg,
+            env: HashMap::new(),
         };
 
         let queue = IntegrationQueue::new(repo_dir.to_path_buf(), "main".to_string());

@@ -512,6 +512,7 @@ fn spawn_agent_in_worktree(
 
     let mut child = Command::new(&agent_config.command)
         .args(&args)
+        .envs(&agent_config.env)
         .current_dir(worktree_path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(output_file))
@@ -558,6 +559,7 @@ fn spawn_agent_in_worktree(
 mod tests {
     use super::*;
     use crate::config::{ResolvedAgentConfig, WorkersConfig};
+    use std::collections::HashMap;
     use std::process::Command as StdCommand;
     use tempfile::TempDir;
 
@@ -615,6 +617,7 @@ mod tests {
             args: vec!["hello from worker".to_string()],
             adapter: None,
             prompt_via: crate::config::PromptVia::Arg,
+            env: HashMap::new(),
         }
     }
 
@@ -757,6 +760,7 @@ mod tests {
             args: vec!["-c".to_string(), "exit 1".to_string()],
             adapter: None,
             prompt_via: crate::config::PromptVia::Arg,
+            env: HashMap::new(),
         };
 
         let (worker_id, assignment_id) = pool
@@ -835,6 +839,7 @@ mod tests {
             args: vec!["10".to_string()],
             adapter: None,
             prompt_via: crate::config::PromptVia::Arg,
+            env: HashMap::new(),
         };
 
         // First spawn succeeds
@@ -868,6 +873,7 @@ mod tests {
             args: vec!["10".to_string()],
             adapter: None,
             prompt_via: crate::config::PromptVia::Arg,
+            env: HashMap::new(),
         };
 
         pool.spawn_worker("beads-active", None, &agent, "test", &output_dir, &conn)

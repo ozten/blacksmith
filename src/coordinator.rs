@@ -830,43 +830,71 @@ fn parse_and_filter_beads(json_str: &str) -> BeadQuery {
     // Run cycle detection on the dependency graph
     let cycles = cycle_detect::detect_cycles(&bead_nodes);
 
-    if cycles.is_empty() {
-        return BeadQuery {
-            ready: ready_beads,
-            cycles: Vec::new(),
-        };
+    // --- Cycle filtering ---
+    let after_cycle: Vec<ReadyBead>;
+
+    if !cycles.is_empty() {
+        // Log each detected cycle
+        for cycle in &cycles {
+            let path = format_cycle_path(cycle);
+            tracing::warn!(
+                cycle_size = cycle.len(),
+                "dependency cycle detected — beads excluded from scheduling: {path}"
+            );
+        }
+
+        // Build set of all cycled bead IDs for efficient filtering
+        let cycled_ids: HashSet<&str> = cycles
+            .iter()
+            .flat_map(|c| c.iter().map(|s| s.as_str()))
+            .collect();
+
+        after_cycle = ready_beads
+            .into_iter()
+            .filter(|b| !cycled_ids.contains(b.id.as_str()))
+            .collect();
+
+        let excluded_count = cycled_ids.len();
+        tracing::warn!(
+            excluded = excluded_count,
+            cycles = cycles.len(),
+            remaining = after_cycle.len(),
+            "dependency cycle detected — {excluded_count} beads excluded from scheduling"
+        );
+    } else {
+        after_cycle = ready_beads;
     }
 
-    // Log each detected cycle
-    for cycle in &cycles {
-        let path = format_cycle_path(cycle);
-        tracing::warn!(
-            cycle_size = cycle.len(),
-            "dependency cycle detected — beads excluded from scheduling: {path}"
+    // --- Dependency filtering ---
+    // A bead is truly ready only if none of its depends_on IDs are still open.
+    let open_ids: HashSet<String> = after_cycle.iter().map(|b| b.id.clone()).collect();
+    let deps_map: std::collections::HashMap<&str, &[String]> = bead_nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.depends_on.as_slice()))
+        .collect();
+
+    let before_dep_count = after_cycle.len();
+    let truly_ready: Vec<ReadyBead> = after_cycle
+        .into_iter()
+        .filter(|b| {
+            deps_map
+                .get(b.id.as_str())
+                .map(|deps| deps.iter().all(|d| !open_ids.contains(d)))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let blocked_count = before_dep_count - truly_ready.len();
+    if blocked_count > 0 {
+        tracing::info!(
+            blocked = blocked_count,
+            ready = truly_ready.len(),
+            "filtered out {blocked_count} beads with unresolved dependencies"
         );
     }
 
-    // Build set of all cycled bead IDs for efficient filtering
-    let cycled_ids: HashSet<&str> = cycles
-        .iter()
-        .flat_map(|c| c.iter().map(|s| s.as_str()))
-        .collect();
-
-    let filtered: Vec<ReadyBead> = ready_beads
-        .into_iter()
-        .filter(|b| !cycled_ids.contains(b.id.as_str()))
-        .collect();
-
-    let excluded_count = cycled_ids.len();
-    tracing::warn!(
-        excluded = excluded_count,
-        cycles = cycles.len(),
-        remaining = filtered.len(),
-        "dependency cycle detected — {excluded_count} beads excluded from scheduling"
-    );
-
     BeadQuery {
-        ready: filtered,
+        ready: truly_ready,
         cycles,
     }
 }
@@ -1257,13 +1285,52 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_and_filter_beads_no_cycles() {
+    fn test_parse_and_filter_beads_no_cycles_no_deps() {
+        let json = r#"[
+            {"id": "a", "priority": 1, "dependencies": []},
+            {"id": "b", "priority": 2, "dependencies": []}
+        ]"#;
+        let result = parse_and_filter_beads(json);
+        assert_eq!(result.ready.len(), 2);
+        assert!(result.cycles.is_empty());
+    }
+
+    #[test]
+    fn test_parse_and_filter_beads_blocked_by_dependency() {
+        // "a" depends on "b" (both open) — only "b" is ready
         let json = r#"[
             {"id": "a", "priority": 1, "dependencies": [{"depends_on_id": "b", "type": "blocks"}]},
             {"id": "b", "priority": 2, "dependencies": []}
         ]"#;
         let result = parse_and_filter_beads(json);
+        assert_eq!(result.ready.len(), 1);
+        assert_eq!(result.ready[0].id, "b");
+        assert!(result.cycles.is_empty());
+    }
+
+    #[test]
+    fn test_parse_and_filter_beads_dep_on_closed_bead() {
+        // "a" depends on "c" which is NOT in the open list — "a" is ready
+        let json = r#"[
+            {"id": "a", "priority": 1, "dependencies": [{"depends_on_id": "c", "type": "blocks"}]},
+            {"id": "b", "priority": 2, "dependencies": []}
+        ]"#;
+        let result = parse_and_filter_beads(json);
         assert_eq!(result.ready.len(), 2);
+        assert!(result.cycles.is_empty());
+    }
+
+    #[test]
+    fn test_parse_and_filter_beads_chain_deps() {
+        // "a" depends on "b", "b" depends on "c" — only "c" is ready
+        let json = r#"[
+            {"id": "a", "priority": 1, "dependencies": [{"depends_on_id": "b", "type": "blocks"}]},
+            {"id": "b", "priority": 2, "dependencies": [{"depends_on_id": "c", "type": "blocks"}]},
+            {"id": "c", "priority": 3, "dependencies": []}
+        ]"#;
+        let result = parse_and_filter_beads(json);
+        assert_eq!(result.ready.len(), 1);
+        assert_eq!(result.ready[0].id, "c");
         assert!(result.cycles.is_empty());
     }
 

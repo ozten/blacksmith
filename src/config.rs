@@ -1,5 +1,6 @@
 use regex::Regex;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level configuration loaded from `.blacksmith/config.toml`
@@ -202,6 +203,9 @@ pub struct AgentConfig {
     /// - "file": write prompt to a temp file, substitute `{prompt_file}` in args
     #[serde(default)]
     pub prompt_via: PromptVia,
+    /// Environment variables to set for the agent process.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
     /// Phase-specific config for coding tasks. If set, takes precedence over
     /// the flat [agent] fields for coding sessions.
     pub coding: Option<AgentPhaseConfig>,
@@ -219,6 +223,8 @@ pub struct AgentPhaseConfig {
     pub adapter: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_prompt_via")]
     pub prompt_via: Option<PromptVia>,
+    /// Phase-specific env overrides. Merged on top of parent [agent] env.
+    pub env: Option<HashMap<String, String>>,
 }
 
 impl AgentConfig {
@@ -227,24 +233,32 @@ impl AgentConfig {
     /// If [agent.coding] is not set, returns the flat [agent] fields.
     pub fn resolved_coding(&self) -> ResolvedAgentConfig {
         match &self.coding {
-            Some(phase) => ResolvedAgentConfig {
-                command: phase
-                    .command
-                    .as_deref()
-                    .unwrap_or(&self.command)
-                    .to_string(),
-                args: phase.args.clone().unwrap_or_else(|| self.args.clone()),
-                adapter: phase.adapter.clone().or_else(|| self.adapter.clone()),
-                prompt_via: phase
-                    .prompt_via
-                    .clone()
-                    .unwrap_or_else(|| self.prompt_via.clone()),
-            },
+            Some(phase) => {
+                let mut env = self.env.clone();
+                if let Some(phase_env) = &phase.env {
+                    env.extend(phase_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+                ResolvedAgentConfig {
+                    command: phase
+                        .command
+                        .as_deref()
+                        .unwrap_or(&self.command)
+                        .to_string(),
+                    args: phase.args.clone().unwrap_or_else(|| self.args.clone()),
+                    adapter: phase.adapter.clone().or_else(|| self.adapter.clone()),
+                    prompt_via: phase
+                        .prompt_via
+                        .clone()
+                        .unwrap_or_else(|| self.prompt_via.clone()),
+                    env,
+                }
+            }
             None => ResolvedAgentConfig {
                 command: self.command.clone(),
                 args: self.args.clone(),
                 adapter: self.adapter.clone(),
                 prompt_via: self.prompt_via.clone(),
+                env: self.env.clone(),
             },
         }
     }
@@ -255,6 +269,10 @@ impl AgentConfig {
         match &self.integration {
             Some(phase) => {
                 let coding = self.resolved_coding();
+                let mut env = coding.env;
+                if let Some(phase_env) = &phase.env {
+                    env.extend(phase_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
                 ResolvedAgentConfig {
                     command: phase
                         .command
@@ -264,6 +282,7 @@ impl AgentConfig {
                     args: phase.args.clone().unwrap_or(coding.args),
                     adapter: phase.adapter.clone().or(coding.adapter),
                     prompt_via: phase.prompt_via.clone().unwrap_or(coding.prompt_via),
+                    env,
                 }
             }
             None => self.resolved_coding(),
@@ -286,6 +305,7 @@ pub struct ResolvedAgentConfig {
     pub args: Vec<String>,
     pub adapter: Option<String>,
     pub prompt_via: PromptVia,
+    pub env: HashMap<String, String>,
 }
 
 fn deserialize_optional_prompt_via<'de, D>(deserializer: D) -> Result<Option<PromptVia>, D::Error>
@@ -1023,6 +1043,7 @@ impl Default for AgentConfig {
             ],
             adapter: None,
             prompt_via: PromptVia::default(),
+            env: HashMap::new(),
             coding: None,
             integration: None,
         }
