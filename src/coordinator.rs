@@ -159,7 +159,10 @@ pub async fn run(
     // No workers are active yet, so every existing worktree is orphaned.
     match worktree::cleanup_orphans(&repo_dir, pool.worktrees_dir(), &[]) {
         Ok(cleaned) if !cleaned.is_empty() => {
-            tracing::info!(count = cleaned.len(), "cleaned up stale worktrees from previous run");
+            tracing::info!(
+                count = cleaned.len(),
+                "cleaned up stale worktrees from previous run"
+            );
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to clean up stale worktrees");
@@ -202,9 +205,8 @@ pub async fn run(
             }
 
             // Ingest JSONL metrics from the worker's output file
-            let ingest_result = ingest_worker_metrics(
-                outcome, &db_conn, &extraction_rules, adapter.as_ref(),
-            );
+            let ingest_result =
+                ingest_worker_metrics(outcome, &db_conn, &extraction_rules, adapter.as_ref());
 
             let succeeded = outcome.exit_code == Some(0);
             if succeeded {
@@ -217,8 +219,13 @@ pub async fn run(
                 failed_beads += 1;
                 // Print failure progress line
                 print_coordinator_progress(
-                    outcome, false, completed_beads, failed_beads,
-                    ingest_result.as_ref(), &db_conn, config.workers.max,
+                    outcome,
+                    false,
+                    completed_beads,
+                    failed_beads,
+                    ingest_result.as_ref(),
+                    &db_conn,
+                    config.workers.max,
                 );
                 tracing::warn!(
                     worker_id = outcome.worker_id,
@@ -258,8 +265,12 @@ pub async fn run(
 
                     // Print progress using DB state (metrics already ingested during poll phase)
                     print_coordinator_integration_progress(
-                        worker_id, &bead_id, completed_beads, failed_beads,
-                        &db_conn, config.workers.max,
+                        worker_id,
+                        &bead_id,
+                        completed_beads,
+                        failed_beads,
+                        &db_conn,
+                        config.workers.max,
                     );
 
                     tracing::info!(
@@ -341,9 +352,8 @@ pub async fn run(
                 };
 
                 // Serialize affected globs as comma-separated string for the DB
-                let affected_globs_str = bead.and_then(|b| {
-                    b.affected_globs.as_ref().map(|globs| globs.join(", "))
-                });
+                let affected_globs_str =
+                    bead.and_then(|b| b.affected_globs.as_ref().map(|globs| globs.join(", ")));
 
                 let resolved_agent = config.agent.resolved_coding();
                 match pool
@@ -1006,6 +1016,7 @@ mod tests {
             },
             reconciliation: ReconciliationConfig::default(),
             architecture: ArchitectureConfig::default(),
+            quality_gates: QualityGatesConfig::default(),
         }
     }
 

@@ -22,6 +22,7 @@ pub struct HarnessConfig {
     pub workers: WorkersConfig,
     pub reconciliation: ReconciliationConfig,
     pub architecture: ArchitectureConfig,
+    pub quality_gates: QualityGatesConfig,
 }
 
 impl HarnessConfig {
@@ -565,6 +566,36 @@ impl ArchitectureConfig {
             expansion_event_window: 15,
             metadata_drift_sensitivity: 2.0,
             refactor_auto_approve: true,
+        }
+    }
+}
+
+/// Configuration for quality gates run by `blacksmith finish`.
+///
+/// Each gate is a list of shell commands. All commands in a gate must succeed
+/// for the gate to pass. If any gate fails, the bead is NOT closed.
+///
+/// Defaults are Rust-oriented but can be overridden for any language.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct QualityGatesConfig {
+    /// Commands to verify the code compiles. Default: `["cargo check"]`
+    pub check: Vec<String>,
+    /// Commands to run the test suite. Default: `["cargo test"]`
+    pub test: Vec<String>,
+    /// Commands to run the linter. Default: `["cargo clippy --fix --allow-dirty"]`
+    pub lint: Vec<String>,
+    /// Commands to check formatting. Default: `["cargo fmt --check"]`
+    pub format: Vec<String>,
+}
+
+impl Default for QualityGatesConfig {
+    fn default() -> Self {
+        Self {
+            check: vec!["cargo check".to_string()],
+            test: vec!["cargo test".to_string()],
+            lint: vec!["cargo clippy --fix --allow-dirty".to_string()],
+            format: vec!["cargo fmt --check".to_string()],
         }
     }
 }
@@ -2346,5 +2377,61 @@ refactor_auto_approve = true
             "unexpected architecture errors: {:?}",
             errors
         );
+    }
+
+    // --- Quality gates config tests ---
+
+    #[test]
+    fn test_default_quality_gates() {
+        let config = HarnessConfig::default();
+        assert_eq!(config.quality_gates.check, vec!["cargo check"]);
+        assert_eq!(config.quality_gates.test, vec!["cargo test"]);
+        assert_eq!(
+            config.quality_gates.lint,
+            vec!["cargo clippy --fix --allow-dirty"]
+        );
+        assert_eq!(config.quality_gates.format, vec!["cargo fmt --check"]);
+    }
+
+    #[test]
+    fn test_load_quality_gates_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[quality_gates]
+check = ["npm run build"]
+test = ["npm test", "npm run e2e"]
+lint = ["eslint ."]
+format = []
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.quality_gates.check, vec!["npm run build"]);
+        assert_eq!(
+            config.quality_gates.test,
+            vec!["npm test", "npm run e2e"]
+        );
+        assert_eq!(config.quality_gates.lint, vec!["eslint ."]);
+        assert!(config.quality_gates.format.is_empty());
+    }
+
+    #[test]
+    fn test_quality_gates_defaults_when_not_specified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[session]
+max_iterations = 10
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.quality_gates.check, vec!["cargo check"]);
+        assert_eq!(config.quality_gates.test, vec!["cargo test"]);
     }
 }

@@ -179,16 +179,21 @@ pub async fn run(
         } else {
             Some(supported)
         };
-        let prompt =
-            match prompt::assemble(&config.prompt, &config.session.prompt_file, &data_dir.db(), targets_opt, supported_opt) {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to assemble prompt");
-                    exit_reason = ExitReason::PromptError;
-                    status.update(HarnessState::ShuttingDown);
-                    break;
-                }
-            };
+        let prompt = match prompt::assemble(
+            &config.prompt,
+            &config.session.prompt_file,
+            &data_dir.db(),
+            targets_opt,
+            supported_opt,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to assemble prompt");
+                exit_reason = ExitReason::PromptError;
+                status.update(HarnessState::ShuttingDown);
+                break;
+            }
+        };
 
         // 3. Compute output file path for this global iteration
         let output_path = data_dir.session_file(global_iteration as u32);
@@ -972,6 +977,7 @@ mod tests {
             workers: WorkersConfig::default(),
             reconciliation: ReconciliationConfig::default(),
             architecture: ArchitectureConfig::default(),
+            quality_gates: QualityGatesConfig::default(),
         }
     }
 

@@ -13,6 +13,7 @@ mod estimation;
 mod expansion_event;
 mod fan_in;
 mod file_resolution;
+mod finish;
 mod gc;
 mod god_file;
 mod hooks;
@@ -157,6 +158,17 @@ enum Commands {
         /// Output as JSON instead of human-readable text
         #[arg(long)]
         json: bool,
+    },
+    /// Close a bead with quality gates (replaces bd-finish.sh)
+    Finish {
+        /// Bead ID to close (e.g. simple-agent-harness-abc)
+        bead_id: String,
+        /// Commit message describing the work done
+        #[arg(name = "MESSAGE")]
+        message: String,
+        /// Specific files to stage (default: git add -u)
+        #[arg(trailing_var_arg = true)]
+        files: Vec<String>,
     },
 }
 
@@ -887,7 +899,13 @@ fn print_arch_text(
         let cycle_marker = if m.in_cycle { " [cycle]" } else { "" };
         println!(
             "  {:<20} {:>6} {:>6} {:>5} {:>8} {:>5}{}",
-            m.name, m.total_lines, m.file_count, m.api_surface_width, violations, m.god_file_count, cycle_marker
+            m.name,
+            m.total_lines,
+            m.file_count,
+            m.api_surface_width,
+            violations,
+            m.god_file_count,
+            cycle_marker
         );
     }
 
@@ -1117,6 +1135,21 @@ async fn main() {
             print_arch_json(&report, &correlation);
         } else {
             print_arch_text(&report, &correlation);
+        }
+        return;
+    }
+
+    if let Some(Commands::Finish {
+        bead_id,
+        message,
+        files,
+    }) = &cli.command
+    {
+        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let result = finish::handle_finish(bead_id, message, files, &config.quality_gates);
+        if !result.success {
+            eprintln!("Error: {}", result.message);
+            std::process::exit(1);
         }
         return;
     }

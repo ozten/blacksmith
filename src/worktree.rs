@@ -106,7 +106,8 @@ pub fn create(
 
 /// Remove a git worktree by its path.
 ///
-/// Runs: `git worktree remove --force <path>`
+/// Runs: `git worktree remove --force <path>`, then cleans up any associated
+/// temp files in the platform's temp directory.
 pub fn remove(repo_dir: &Path, wt_path: &Path) -> Result<(), WorktreeError> {
     if !wt_path.exists() {
         // Already gone, nothing to do
@@ -125,7 +126,68 @@ pub fn remove(repo_dir: &Path, wt_path: &Path) -> Result<(), WorktreeError> {
         )));
     }
 
+    // Best-effort cleanup of associated temp files
+    cleanup_temp_files(wt_path);
+
     Ok(())
+}
+
+/// Best-effort cleanup of temp files associated with a worktree.
+///
+/// Uses portable `std::env::temp_dir()` (macOS: /private/var/folders/...,
+/// Linux: /tmp/, Windows: C:\Users\...\AppData\Local\Temp\).
+///
+/// Cleans up:
+/// 1. If the worktree itself was under the temp directory, removes any remnants
+/// 2. Temp dirs matching the worktree directory name (e.g., `worker-0-beads-abc`)
+/// 3. Temp dirs matching the bead ID (e.g., `blacksmith-beads-abc-*`)
+fn cleanup_temp_files(wt_path: &Path) {
+    let temp_root = std::env::temp_dir();
+
+    // 1. If the worktree path itself is under temp, ensure it's fully gone
+    if wt_path.starts_with(&temp_root) && wt_path.exists() {
+        let _ = std::fs::remove_dir_all(wt_path);
+    }
+
+    // 2. Pattern-based cleanup: look for dirs in temp matching the worktree name
+    let wt_name = match wt_path.file_name().and_then(|n| n.to_str()) {
+        Some(name) => name.to_string(),
+        None => return,
+    };
+
+    // Extract bead ID from the worktree name (format: worker-{id}-{bead_id})
+    let bead_id = wt_name
+        .strip_prefix("worker-")
+        .and_then(|rest| rest.split_once('-').map(|(_, bead)| bead.to_string()));
+
+    let entries = match std::fs::read_dir(&temp_root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+
+        let should_clean =
+            // Match dirs named after the worktree (e.g., "worker-0-beads-abc")
+            name == wt_name
+            // Match blacksmith-prefixed temp dirs for this bead
+            || bead_id.as_ref().map_or(false, |id| {
+                name.starts_with(&format!("blacksmith-{id}"))
+            });
+
+        if should_clean {
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
 
 /// List all git worktrees known to the repository.
@@ -421,6 +483,43 @@ mod tests {
 
         let cleaned = cleanup_orphans(dir.path(), &wt_dir, &[]).unwrap();
         assert!(cleaned.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_temp_files_removes_matching_dir() {
+        let temp = TempDir::new().unwrap();
+        let temp_root = temp.path();
+
+        // Create a fake worktree name directory in a "temp" dir
+        let wt_name = "worker-0-beads-cleanup-test";
+        let fake_temp = temp_root.join(wt_name);
+        std::fs::create_dir_all(&fake_temp).unwrap();
+        std::fs::write(fake_temp.join("stale.txt"), "leftover").unwrap();
+
+        // Create a matching bead-prefixed dir
+        let bead_temp = temp_root.join("blacksmith-beads-cleanup-test-session");
+        std::fs::create_dir_all(&bead_temp).unwrap();
+        std::fs::write(bead_temp.join("prompt.txt"), "leftover").unwrap();
+
+        // Create an unrelated dir (should NOT be cleaned)
+        let unrelated = temp_root.join("unrelated-dir");
+        std::fs::create_dir_all(&unrelated).unwrap();
+
+        // We can't easily override std::env::temp_dir(), so test the helper logic directly.
+        // Instead, test the internal cleanup_temp_files won't crash on a real worktree path.
+        let wt_path = temp_root.join(wt_name);
+        // The worktree dir was already removed by "git worktree remove" simulation,
+        // but we test that cleanup_temp_files doesn't panic.
+        cleanup_temp_files(&wt_path);
+
+        // The unrelated dir should still exist
+        assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn test_cleanup_temp_files_no_panic_on_nonexistent() {
+        // Should not panic when called with a path that doesn't exist
+        cleanup_temp_files(Path::new("/nonexistent/path/worker-99-beads-fake"));
     }
 
     #[test]

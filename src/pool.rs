@@ -258,8 +258,14 @@ impl WorkerPool {
         let output_file = output_dir.join(format!("{}.jsonl", session_id));
 
         // Spawn the agent process in the worktree
-        let handle =
-            spawn_agent_in_worktree(worker_id, agent_config, &wt_path, &output_file, prompt, session_id)?;
+        let handle = spawn_agent_in_worktree(
+            worker_id,
+            agent_config,
+            &wt_path,
+            &output_file,
+            prompt,
+            session_id,
+        )?;
 
         // Update worker state
         let worker = &mut self.workers[worker_idx];
@@ -691,7 +697,14 @@ mod tests {
 
         // Spawn a worker
         let (worker_id, assignment_id) = pool
-            .spawn_worker("beads-test-abc", None, &agent, "test prompt", &output_dir, &conn)
+            .spawn_worker(
+                "beads-test-abc",
+                None,
+                &agent,
+                "test prompt",
+                &output_dir,
+                &conn,
+            )
             .await
             .unwrap();
 
