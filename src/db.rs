@@ -87,6 +87,11 @@ pub fn open_or_create(path: &Path) -> Result<Connection> {
 
         CREATE INDEX IF NOT EXISTS idx_integration_log_assignment ON integration_log(assignment_id);
 
+        -- Tracks fix-loop iteration counts during integration (merge to main).
+        -- When a worker branch is merged, the integrator may need multiple
+        -- compiler-fix iterations before the build passes. Each record captures
+        -- how many iterations were needed and which modules were involved.
+        -- Used by signal_correlator to identify problematic module interfaces.
         CREATE TABLE IF NOT EXISTS integration_iterations (
             id              INTEGER PRIMARY KEY,
             assignment_id   INTEGER NOT NULL REFERENCES worker_assignments(id),
