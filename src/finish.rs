@@ -1,3 +1,4 @@
+use crate::config::FinishConfig;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -7,36 +8,82 @@ const GREEN: &str = "\x1b[0;32m";
 const YELLOW: &str = "\x1b[0;33m";
 const NC: &str = "\x1b[0m";
 
-pub fn handle_finish(bead_id: &str, message: &str, files: &[String]) -> Result<(), String> {
+/// Run a shell command string (e.g. "cargo check") and return its exit status.
+fn run_gate(cmd_str: &str, label: &str) -> Result<(), String> {
+    let parts: Vec<&str> = cmd_str.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err(format!("{label} command is empty"));
+    }
+    let status = Command::new(parts[0])
+        .args(&parts[1..])
+        .status()
+        .map_err(|e| format!("Failed to run {label} ({cmd_str}): {e}"))?;
+    if !status.success() {
+        return Err(format!("{label} failed"));
+    }
+    Ok(())
+}
+
+pub fn handle_finish(
+    bead_id: &str,
+    message: &str,
+    files: &[String],
+    finish_config: &FinishConfig,
+) -> Result<(), String> {
     println!("{GREEN}=== blacksmith finish: closing {bead_id} ==={NC}");
 
-    // 0a. cargo check gate
-    println!("{YELLOW}[0a/8] Running cargo check...{NC}");
-    let check = Command::new("cargo")
-        .args(["check"])
-        .status()
-        .map_err(|e| format!("Failed to run cargo check: {e}"))?;
-    if !check.success() {
-        eprintln!();
-        eprintln!("{RED}=== CARGO CHECK FAILED ==={NC}");
-        eprintln!("{RED}Bead {bead_id} will NOT be closed. Fix compilation errors first.{NC}");
-        return Err("cargo check failed".into());
-    }
-    println!("{GREEN}[0a/8] cargo check passed{NC}");
+    let mut step = b'a';
 
-    // 0b. cargo test gate
-    println!("{YELLOW}[0b/8] Running cargo test...{NC}");
-    let test = Command::new("cargo")
-        .args(["test"])
-        .status()
-        .map_err(|e| format!("Failed to run cargo test: {e}"))?;
-    if !test.success() {
+    // Quality gate: check
+    let check_label = format!("[0{}/8]", step as char);
+    println!("{YELLOW}{check_label} Running {}...{NC}", finish_config.check);
+    if let Err(e) = run_gate(&finish_config.check, "check") {
         eprintln!();
-        eprintln!("{RED}=== CARGO TEST FAILED ==={NC}");
-        eprintln!("{RED}Bead {bead_id} will NOT be closed. Fix failing tests first.{NC}");
-        return Err("cargo test failed".into());
+        eprintln!("{RED}=== CHECK FAILED ==={NC}");
+        eprintln!("{RED}Bead {bead_id} will NOT be closed. Fix errors first.{NC}");
+        return Err(e);
     }
-    println!("{GREEN}[0b/8] cargo test passed{NC}");
+    println!("{GREEN}{check_label} {} passed{NC}", finish_config.check);
+    step += 1;
+
+    // Quality gate: test
+    let test_label = format!("[0{}/8]", step as char);
+    println!("{YELLOW}{test_label} Running {}...{NC}", finish_config.test);
+    if let Err(e) = run_gate(&finish_config.test, "test") {
+        eprintln!();
+        eprintln!("{RED}=== TEST FAILED ==={NC}");
+        eprintln!("{RED}Bead {bead_id} will NOT be closed. Fix failing tests first.{NC}");
+        return Err(e);
+    }
+    println!("{GREEN}{test_label} {} passed{NC}", finish_config.test);
+    step += 1;
+
+    // Quality gate: lint (optional)
+    if let Some(ref lint_cmd) = finish_config.lint {
+        let lint_label = format!("[0{}/8]", step as char);
+        println!("{YELLOW}{lint_label} Running {lint_cmd}...{NC}");
+        if let Err(e) = run_gate(lint_cmd, "lint") {
+            eprintln!();
+            eprintln!("{RED}=== LINT FAILED ==={NC}");
+            eprintln!("{RED}Bead {bead_id} will NOT be closed. Fix lint errors first.{NC}");
+            return Err(e);
+        }
+        println!("{GREEN}{lint_label} {lint_cmd} passed{NC}");
+        step += 1;
+    }
+
+    // Quality gate: format (optional)
+    if let Some(ref fmt_cmd) = finish_config.format {
+        let fmt_label = format!("[0{}/8]", step as char);
+        println!("{YELLOW}{fmt_label} Running {fmt_cmd}...{NC}");
+        if let Err(e) = run_gate(fmt_cmd, "format") {
+            eprintln!();
+            eprintln!("{RED}=== FORMAT CHECK FAILED ==={NC}");
+            eprintln!("{RED}Bead {bead_id} will NOT be closed. Fix formatting first.{NC}");
+            return Err(e);
+        }
+        println!("{GREEN}{fmt_label} {fmt_cmd} passed{NC}");
+    }
 
     // 1. Append PROGRESS.txt to PROGRESS_LOG.txt with timestamp
     if Path::new("PROGRESS.txt").exists() {

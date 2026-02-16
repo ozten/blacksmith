@@ -960,6 +960,7 @@ mod tests {
             workers: WorkersConfig::default(),
             reconciliation: ReconciliationConfig::default(),
             architecture: ArchitectureConfig::default(),
+            finish: FinishConfig::default(),
         }
     }
 

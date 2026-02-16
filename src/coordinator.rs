@@ -828,6 +828,7 @@ mod tests {
             },
             reconciliation: ReconciliationConfig::default(),
             architecture: ArchitectureConfig::default(),
+            finish: FinishConfig::default(),
         }
     }
 

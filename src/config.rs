@@ -22,6 +22,7 @@ pub struct HarnessConfig {
     pub workers: WorkersConfig,
     pub reconciliation: ReconciliationConfig,
     pub architecture: ArchitectureConfig,
+    pub finish: FinishConfig,
 }
 
 impl HarnessConfig {
@@ -495,6 +496,35 @@ pub struct ReconciliationConfig {
 impl Default for ReconciliationConfig {
     fn default() -> Self {
         Self { every: 3 }
+    }
+}
+
+/// Quality gate commands for the finish subcommand.
+///
+/// These commands are run before closing a bead to ensure code quality.
+/// Defaults match Rust projects (cargo check, cargo test).
+/// Override for other languages (e.g., tsc/jest for TypeScript, go vet/go test for Go).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct FinishConfig {
+    /// Compilation/type-check command. Default: "cargo check"
+    pub check: String,
+    /// Test command. Default: "cargo test"
+    pub test: String,
+    /// Optional lint command. Not run if None.
+    pub lint: Option<String>,
+    /// Optional format-check command. Not run if None.
+    pub format: Option<String>,
+}
+
+impl Default for FinishConfig {
+    fn default() -> Self {
+        Self {
+            check: "cargo check".to_string(),
+            test: "cargo test".to_string(),
+            lint: None,
+            format: None,
+        }
     }
 }
 
@@ -2346,5 +2376,77 @@ refactor_auto_approve = true
             "unexpected architecture errors: {:?}",
             errors
         );
+    }
+
+    // --- Finish config tests ---
+
+    #[test]
+    fn test_default_finish_config() {
+        let config = HarnessConfig::default();
+        assert_eq!(config.finish.check, "cargo check");
+        assert_eq!(config.finish.test, "cargo test");
+        assert!(config.finish.lint.is_none());
+        assert!(config.finish.format.is_none());
+    }
+
+    #[test]
+    fn test_load_finish_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[finish]
+check = "tsc --noEmit"
+test = "jest"
+lint = "eslint ."
+format = "prettier --check ."
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.finish.check, "tsc --noEmit");
+        assert_eq!(config.finish.test, "jest");
+        assert_eq!(config.finish.lint, Some("eslint .".to_string()));
+        assert_eq!(config.finish.format, Some("prettier --check .".to_string()));
+    }
+
+    #[test]
+    fn test_finish_defaults_when_not_specified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[session]
+max_iterations = 10
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.finish.check, "cargo check");
+        assert_eq!(config.finish.test, "cargo test");
+        assert!(config.finish.lint.is_none());
+        assert!(config.finish.format.is_none());
+    }
+
+    #[test]
+    fn test_finish_partial_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[finish]
+check = "go vet ./..."
+test = "go test ./..."
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        assert_eq!(config.finish.check, "go vet ./...");
+        assert_eq!(config.finish.test, "go test ./...");
+        assert!(config.finish.lint.is_none());
+        assert!(config.finish.format.is_none());
     }
 }

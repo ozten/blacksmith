@@ -46,3 +46,9 @@ worktrees_dir = "worktrees"
 
 [commit_detection]
 patterns = ["bd-finish", "(?i)git commit", "(?i)\\bcommitted\\b"]
+
+# [finish]
+# check = "cargo check"        # compilation/type-check gate
+# test = "cargo test"          # test suite gate
+# lint = "cargo clippy"        # optional lint gate (not run if omitted)
+# format = "cargo fmt --check" # optional format gate (not run if omitted)

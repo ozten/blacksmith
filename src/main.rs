@@ -1028,7 +1028,8 @@ async fn main() {
         files,
     }) = &cli.command
     {
-        if let Err(e) = finish::handle_finish(bead_id, message, files) {
+        let config_for_finish = HarnessConfig::load(&cli.config).unwrap_or_default();
+        if let Err(e) = finish::handle_finish(bead_id, message, files, &config_for_finish.finish) {
             eprintln!("{e}");
             std::process::exit(1);
         }
