@@ -2665,3 +2665,23 @@
 - simple-agent-harness-5hg (P1): Enable 3 parallel agents in blacksmith.toml
 - simple-agent-harness-cgo (P2): Add refactor proposal generation from architecture analysis
 - simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
+
+--- 2026-02-16 00:41:42 | simple-agent-harness-5hg ---
+## Last Session: Enable 3 parallel agents in blacksmith.toml (2026-02-16)
+
+### What Was Done
+- Implemented bead simple-agent-harness-5hg (P1): Enable 3 parallel agents
+- Added [workers] section to blacksmith.toml: max=3, base_branch="main", worktrees_dir="worktrees"
+- Touched STOP file so running blacksmith process exits cleanly for recompile/restart
+- All 1123 tests pass, clippy and fmt clean (only pre-existing dead_code warnings)
+
+### Current State
+- blacksmith.toml now configured for 3 parallel workers
+- STOP file present — operator should: `cargo build --release`, remove STOP, restart blacksmith
+- When workers.max > 1, coordinator::run is used instead of serial runner::run
+- Worktrees will be created under .blacksmith/worktrees/ for each worker
+
+### Suggested Next Tasks
+- simple-agent-harness-cgo (P2): Add refactor proposal generation from architecture analysis
+- simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
+- simple-agent-harness-34d (P3): Add architecture agent configuration knobs
