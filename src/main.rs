@@ -38,6 +38,7 @@ mod session;
 mod signals;
 mod singleton;
 mod status;
+mod structural_metrics;
 mod task_manifest;
 mod watchdog;
 mod worktree;

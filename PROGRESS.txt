@@ -1,20 +1,24 @@
-## Last Session: Verify and close singleton lock fix (2026-02-16)
+## Last Session: Implement structural metrics aggregator (2026-02-16)
 
 ### What Was Done
-- Verified bead simple-agent-harness-xyc (P0): singleton lock fix
-- Confirmed all components are in place:
-  - fs2 = "0.4" present in Cargo.toml
-  - singleton.rs compiles cleanly with all 5 tests passing
-  - DataDir::lock() method exists in data_dir.rs
-  - Singleton lock wired into coordinator startup at main.rs:1258
-- No code changes needed — the fix was already applied by a prior session but the bead was never closed
-- Full test suite: 1100 passed, 0 failed, 1 ignored
+- Implemented bead simple-agent-harness-a9n (P2): Structural metrics aggregator
+- Created `src/structural_metrics.rs` with `analyze()` function that computes all structural metrics in one pass:
+  - Fan-in scores (via `fan_in::scores_from_graph`)
+  - File sizes (line counts per file)
+  - Cohesion/god file detection (via `god_file::detect_god_files`)
+  - Cycle participation (via `circular_dep::detect_module_cycles`)
+  - API surface width (via `public_api::extract_public_apis`)
+  - Boundary violations (via `boundary_violation::detect_boundary_violations`)
+- Returns a `StructuralReport` with `ModuleMetrics` (per-module) and `FileMetrics` (per-file)
+- Added `mod structural_metrics;` to main.rs
+- 11 unit tests all passing, full suite: 1111 passed, 0 failed
 
 ### Current State
-- Singleton lock is functional: prevents concurrent blacksmith instances
 - Codebase compiles cleanly (only pre-existing dead_code warnings for not-yet-wired modules)
+- All 1111 tests pass
+- structural_metrics module is ready to be consumed by the historical signal correlator
 
 ### Suggested Next Tasks
-- simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis
+- simple-agent-harness-4wc (P2): Implement historical signal correlator (blocked by this bead, now unblocked)
 - simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
 - simple-agent-harness-34d (P3): Add architecture agent configuration knobs
