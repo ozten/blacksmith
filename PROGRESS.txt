@@ -1,27 +1,29 @@
-## Last Session: Implement file resolution from intent concepts (2026-02-16)
+## Last Session: Add public API surface extractor for modules (2026-02-16)
 
 ### What Was Done
-- Implemented bead simple-agent-harness-ikw: file resolution from intent concepts
-- Added `resolve()` function to src/file_resolution.rs that maps Layer 1 intent concepts to concrete files and modules
-- Core logic:
-  - `concept_to_keywords()` — splits concept names like "auth_endpoints" into keywords ["auth", "endpoints"]
-  - `keywords_match_name()` — case-insensitive substring matching of keywords against file/module names
-  - `resolve()` — scans module names and file stems for keyword matches, collects resolved files/modules per concept
-  - `compute_blast_radius()` — BFS on reverse import graph to find transitive dependents
-  - `file_relative_path()` — converts absolute paths to src-relative paths for storage
-  - `module_detect_name()` — derives module name from directory path
-- Skips generic entry points (main.rs, mod.rs, lib.rs) to avoid overly broad matches
-- Computes affected_modules (direct matches) and blast_radius (transitive dependents)
-- boundary_signatures left empty (populated by public API extractor bead)
-- 17 new tests (31 total in file_resolution module): keyword splitting, matching, resolve with file/module matches, compound concepts, blast radius (empty/direct/transitive), no-match, multiple concepts, field passthrough, entry point skipping
+- Implemented bead simple-agent-harness-ehy: public API surface extractor
+- Created src/public_api.rs with:
+  - `Symbol` struct: kind, name, signature, file for each public symbol
+  - `ModuleApi` struct: module_name + public_symbols vector
+  - `extract_public_apis()` — extracts public API for all detected modules
+  - `extract_module_api()` — extracts public API for a single module
+  - `format_boundary_signatures()` — formats symbols into boundary_signatures strings
+  - `extract_from_files()` — convenience for extracting without full module detection
+  - `extract_symbols_from_source()` — line-by-line parser for pub declarations
+- Handles: pub fn, pub async fn, pub struct, pub enum, pub trait, pub const, pub static, pub type
+- Correctly skips: pub(crate), pub(super), pub(in ...) restricted visibility
+- Skips comments (line and block), attributes
+- Signature cleaning: removes trailing `{`, normalizes whitespace
+- 27 tests covering all symbol kinds, visibility filtering, multi-module extraction, sorting, edge cases
 
 ### Current State
 - Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
-- Full test suite: 987 passed, 0 failed, 1 ignored
-- file_resolution::resolve() is ready for downstream beads (scheduler integration, metadata regeneration)
+- Full test suite: 1014 passed, 0 failed, 1 ignored
+- public_api module ready for downstream beads (boundary violations, structural metrics)
 
 ### Suggested Next Tasks
-- simple-agent-harness-ehy (P2): Add public API surface extractor for modules (populates boundary_signatures)
 - simple-agent-harness-q5v (P2): Add fan-in hotspot scoring for files
 - simple-agent-harness-33k (P2): Add circular dependency detection for modules
-- simple-agent-harness-90v (P2): Implement ensure_fresh_metadata for scheduler integration (now unblocked)
+- simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
+- simple-agent-harness-aol (P2): Add boundary violation detector (now unblocked by this bead)
+- simple-agent-harness-9xc (P2): Add god file detection via cohesion analysis (now unblocked)

@@ -23,6 +23,7 @@ mod migrate;
 mod module_detect;
 mod pool;
 mod prompt;
+mod public_api;
 mod ratelimit;
 mod retention;
 mod retry;
