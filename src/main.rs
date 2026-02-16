@@ -1,4 +1,5 @@
 mod adapters;
+mod boundary_violation;
 mod brief;
 mod circular_dep;
 mod commit;
