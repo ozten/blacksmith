@@ -14,6 +14,7 @@ mod estimation;
 mod expansion_event;
 mod fan_in;
 mod file_resolution;
+mod finish;
 mod gc;
 mod god_file;
 mod hooks;
@@ -160,6 +161,15 @@ enum Commands {
     Adapter {
         #[command(subcommand)]
         action: AdapterAction,
+    },
+    /// Close a bead: run quality gates, commit, bd close, sync, push
+    Finish {
+        /// Bead ID to close (e.g. simple-agent-harness-abc)
+        bead_id: String,
+        /// Commit message describing the work done
+        message: String,
+        /// Specific files to stage (if omitted, runs git add -u)
+        files: Vec<String>,
     },
 }
 
@@ -1007,6 +1017,19 @@ async fn main() {
 
         if let Err(e) = result {
             eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(Commands::Finish {
+        bead_id,
+        message,
+        files,
+    }) = &cli.command
+    {
+        if let Err(e) = finish::handle_finish(bead_id, message, files) {
+            eprintln!("{e}");
             std::process::exit(1);
         }
         return;
