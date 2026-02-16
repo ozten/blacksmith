@@ -1,29 +1,24 @@
-## Last Session: Add public API surface extractor for modules (2026-02-16)
+## Last Session: Add fan-in hotspot scoring for files (2026-02-16)
 
 ### What Was Done
-- Implemented bead simple-agent-harness-ehy: public API surface extractor
-- Created src/public_api.rs with:
-  - `Symbol` struct: kind, name, signature, file for each public symbol
-  - `ModuleApi` struct: module_name + public_symbols vector
-  - `extract_public_apis()` — extracts public API for all detected modules
-  - `extract_module_api()` — extracts public API for a single module
-  - `format_boundary_signatures()` — formats symbols into boundary_signatures strings
-  - `extract_from_files()` — convenience for extracting without full module detection
-  - `extract_symbols_from_source()` — line-by-line parser for pub declarations
-- Handles: pub fn, pub async fn, pub struct, pub enum, pub trait, pub const, pub static, pub type
-- Correctly skips: pub(crate), pub(super), pub(in ...) restricted visibility
-- Skips comments (line and block), attributes
-- Signature cleaning: removes trailing `{`, normalizes whitespace
-- 27 tests covering all symbol kinds, visibility filtering, multi-module extraction, sorting, edge cases
+- Implemented bead simple-agent-harness-q5v: fan-in hotspot scoring
+- Created src/fan_in.rs with:
+  - `FanInEntry` struct: file, importers count, total_modules, score
+  - `compute_fan_in_scores()` — builds import graph and computes fan-in for all files
+  - `scores_from_graph()` — computes fan-in from a pre-built import graph (useful for downstream)
+  - `hotspots()` — filters entries above a configurable threshold
+- Formula: `fan_in_score(file) = count(modules importing file) / total_modules`
+- Results sorted descending by score, with path-based tiebreaking for determinism
+- 11 tests covering: empty project, single file, one/multiple importers, sorting, hotspot filtering, direct graph input, mod declarations, deterministic ordering
 
 ### Current State
 - Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
-- Full test suite: 1014 passed, 0 failed, 1 ignored
-- public_api module ready for downstream beads (boundary violations, structural metrics)
+- Full test suite: 1024 passed, 0 failed (singleton test pre-existing failure), 1 ignored
+- fan_in module ready for downstream beads (structural metrics aggregator)
 
 ### Suggested Next Tasks
-- simple-agent-harness-q5v (P2): Add fan-in hotspot scoring for files
+- simple-agent-harness-9xc (P2): Add god file detection via cohesion analysis
 - simple-agent-harness-33k (P2): Add circular dependency detection for modules
+- simple-agent-harness-aol (P2): Add boundary violation detector for module imports
 - simple-agent-harness-n1d (P2): Add metadata regeneration strategy with lazy invalidation
-- simple-agent-harness-aol (P2): Add boundary violation detector (now unblocked by this bead)
-- simple-agent-harness-9xc (P2): Add god file detection via cohesion analysis (now unblocked)
+- simple-agent-harness-a9n (P2): Implement structural metrics aggregator (blocked until more metrics done)
