@@ -2552,3 +2552,25 @@
 - simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis
 - simple-agent-harness-4wc (P2): Implement historical signal correlator (was blocked by buv, now unblocked)
 - Wire detect_drift into regenerate_after_refactor to emit drift reports during bulk regeneration
+
+--- 2026-02-16 00:28:05 | simple-agent-harness-xyc ---
+## Last Session: Verify and close singleton lock fix (2026-02-16)
+
+### What Was Done
+- Verified bead simple-agent-harness-xyc (P0): singleton lock fix
+- Confirmed all components are in place:
+  - fs2 = "0.4" present in Cargo.toml
+  - singleton.rs compiles cleanly with all 5 tests passing
+  - DataDir::lock() method exists in data_dir.rs
+  - Singleton lock wired into coordinator startup at main.rs:1258
+- No code changes needed — the fix was already applied by a prior session but the bead was never closed
+- Full test suite: 1100 passed, 0 failed, 1 ignored
+
+### Current State
+- Singleton lock is functional: prevents concurrent blacksmith instances
+- Codebase compiles cleanly (only pre-existing dead_code warnings for not-yet-wired modules)
+
+### Suggested Next Tasks
+- simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis
+- simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
+- simple-agent-harness-34d (P3): Add architecture agent configuration knobs

@@ -1,21 +1,20 @@
-## Last Session: Add metadata drift detection between regenerations (2026-02-16)
+## Last Session: Verify and close singleton lock fix (2026-02-16)
 
 ### What Was Done
-- Implemented bead simple-agent-harness-buv: metadata drift detection
-- Added to src/metadata_regen.rs:
-  - `DEFAULT_DRIFT_THRESHOLD` constant (3.0x)
-  - `ConceptDrift` struct: tracks per-concept file count changes
-  - `DriftReport` struct: full drift analysis with `has_drift()` and `summary()` methods
-  - `detect_drift()`: compares latest cached resolution against new resolution, flags concepts where resolved file count grew by >= threshold (configurable, default 3x)
-  - `count_unique_files()`: helper to count deduplicated files across mappings
-  - 12 new tests covering: no previous resolution, same-entry skip, below/above/at threshold, 0→N drift, new concepts, custom threshold, multiple concepts mixed, summary formatting
+- Verified bead simple-agent-harness-xyc (P0): singleton lock fix
+- Confirmed all components are in place:
+  - fs2 = "0.4" present in Cargo.toml
+  - singleton.rs compiles cleanly with all 5 tests passing
+  - DataDir::lock() method exists in data_dir.rs
+  - Singleton lock wired into coordinator startup at main.rs:1258
+- No code changes needed — the fix was already applied by a prior session but the bead was never closed
+- Full test suite: 1100 passed, 0 failed, 1 ignored
 
 ### Current State
-- Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
-- Full test suite: 1100 passed, 0 failed, 1 ignored
-- Drift detection ready to be called after any `ensure_fresh()` regeneration
+- Singleton lock is functional: prevents concurrent blacksmith instances
+- Codebase compiles cleanly (only pre-existing dead_code warnings for not-yet-wired modules)
 
 ### Suggested Next Tasks
 - simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis
-- simple-agent-harness-4wc (P2): Implement historical signal correlator (was blocked by buv, now unblocked)
-- Wire detect_drift into regenerate_after_refactor to emit drift reports during bulk regeneration
+- simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
+- simple-agent-harness-34d (P3): Add architecture agent configuration knobs
