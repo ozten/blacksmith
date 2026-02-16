@@ -351,9 +351,12 @@ pub async fn run(
                     None => continue,
                 };
 
-                // Serialize affected globs as comma-separated string for the DB
-                let affected_globs_str =
-                    bead.and_then(|b| b.affected_globs.as_ref().map(|globs| globs.join(", ")));
+                // Serialize affected globs as JSON array for the DB
+                let affected_globs_str = bead.and_then(|b| {
+                    b.affected_globs
+                        .as_ref()
+                        .map(|globs| serde_json::to_string(globs).unwrap())
+                });
 
                 let resolved_agent = config.agent.resolved_coding();
                 match pool
@@ -432,15 +435,13 @@ fn lookup_affected_globs_for_worker(
     let assignment_id = pool.worker_assignment_id(worker_id)?;
     let wa = db::get_worker_assignment(db_conn, assignment_id).ok()??;
     let globs_str = wa.affected_globs?;
-    Some(parse_comma_separated_globs(&globs_str))
+    parse_globs_json(&globs_str)
 }
 
-/// Parse a comma-separated globs string into a vector.
-fn parse_comma_separated_globs(s: &str) -> Vec<String> {
-    s.split(',')
-        .map(|g| g.trim().to_string())
-        .filter(|g| !g.is_empty())
-        .collect()
+/// Parse a JSON array string of globs into a vector.
+/// Returns None if the string is not valid JSON.
+fn parse_globs_json(s: &str) -> Option<Vec<String>> {
+    serde_json::from_str(s).ok()
 }
 
 /// Check all coding workers for `.blacksmith-expand` files and process them.
@@ -510,7 +511,7 @@ fn check_and_process_expand_files(pool: &WorkerPool, db_conn: &Connection) {
             .ok()
             .flatten()
             .and_then(|wa| wa.affected_globs)
-            .map(|g| parse_comma_separated_globs(&g))
+            .and_then(|g| parse_globs_json(&g))
             .unwrap_or_default();
 
         let mut merged = existing;
@@ -520,7 +521,7 @@ fn check_and_process_expand_files(pool: &WorkerPool, db_conn: &Connection) {
             }
         }
 
-        let merged_str = merged.join(", ");
+        let merged_str = serde_json::to_string(&merged).unwrap();
 
         // Update the DB
         match db::update_worker_assignment_affected_globs(db_conn, assignment_id, &merged_str) {
@@ -1247,17 +1248,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_comma_separated_globs() {
+    fn test_parse_globs_json() {
         assert_eq!(
-            parse_comma_separated_globs("src/db.rs, src/config.rs"),
-            vec!["src/db.rs", "src/config.rs"]
+            parse_globs_json(r#"["src/db.rs","src/config.rs"]"#),
+            Some(vec!["src/db.rs".to_string(), "src/config.rs".to_string()])
         );
-        assert_eq!(parse_comma_separated_globs("src/db.rs"), vec!["src/db.rs"]);
-        assert!(parse_comma_separated_globs("").is_empty());
         assert_eq!(
-            parse_comma_separated_globs("  src/a.rs ,  src/b.rs  "),
-            vec!["src/a.rs", "src/b.rs"]
+            parse_globs_json(r#"["src/db.rs"]"#),
+            Some(vec!["src/db.rs".to_string()])
         );
+        assert_eq!(parse_globs_json(r#"[]"#), Some(vec![]));
+        assert_eq!(parse_globs_json(""), None);
+        assert_eq!(parse_globs_json("not json"), None);
     }
 
     #[test]
@@ -1317,14 +1319,14 @@ mod tests {
         let db_path = repo.join("test.db");
         let db_conn = db::open_or_create(&db_path).unwrap();
 
-        // Insert a worker assignment with initial affected_globs
+        // Insert a worker assignment with initial affected_globs (JSON array)
         let assignment_id = db::insert_worker_assignment(
             &db_conn,
             0,
             "beads-expand-test",
             &fake_worktree.to_string_lossy(),
             "coding",
-            Some("src/db.rs"),
+            Some(r#"["src/db.rs"]"#),
         )
         .unwrap();
 
@@ -1355,14 +1357,15 @@ mod tests {
         // Process expand files
         check_and_process_expand_files(&pool, &db_conn);
 
-        // Verify the affected_globs were updated in DB
+        // Verify the affected_globs were updated in DB as JSON array
         let wa = db::get_worker_assignment(&db_conn, assignment_id)
             .unwrap()
             .unwrap();
-        let globs = wa.affected_globs.unwrap();
-        assert!(globs.contains("src/db.rs"));
-        assert!(globs.contains("src/config.rs"));
-        assert!(globs.contains("src/signals.rs"));
+        let globs: Vec<String> =
+            serde_json::from_str(&wa.affected_globs.unwrap()).unwrap();
+        assert!(globs.contains(&"src/db.rs".to_string()));
+        assert!(globs.contains(&"src/config.rs".to_string()));
+        assert!(globs.contains(&"src/signals.rs".to_string()));
 
         // Verify the expand file was deleted
         assert!(!fake_worktree.join(EXPAND_FILE_NAME).exists());
@@ -1383,7 +1386,7 @@ mod tests {
             "beads-nodup",
             &fake_worktree.to_string_lossy(),
             "coding",
-            Some("src/db.rs, src/config.rs"),
+            Some(r#"["src/db.rs","src/config.rs"]"#),
         )
         .unwrap();
 
@@ -1418,8 +1421,8 @@ mod tests {
         let wa = db::get_worker_assignment(&db_conn, assignment_id)
             .unwrap()
             .unwrap();
-        let globs_str = wa.affected_globs.unwrap();
-        let globs = parse_comma_separated_globs(&globs_str);
+        let globs: Vec<String> =
+            serde_json::from_str(&wa.affected_globs.unwrap()).unwrap();
 
         // src/db.rs should appear only once
         assert_eq!(globs.iter().filter(|g| *g == "src/db.rs").count(), 1);
@@ -1442,7 +1445,7 @@ mod tests {
             "beads-empty",
             &fake_worktree.to_string_lossy(),
             "coding",
-            Some("src/db.rs"),
+            Some(r#"["src/db.rs"]"#),
         )
         .unwrap();
 
@@ -1474,7 +1477,7 @@ mod tests {
         let wa = db::get_worker_assignment(&db_conn, assignment_id)
             .unwrap()
             .unwrap();
-        assert_eq!(wa.affected_globs, Some("src/db.rs".to_string()));
+        assert_eq!(wa.affected_globs, Some(r#"["src/db.rs"]"#.to_string()));
 
         // But expand file should still be deleted
         assert!(!fake_worktree.join(EXPAND_FILE_NAME).exists());
@@ -1530,7 +1533,8 @@ mod tests {
         let wa = db::get_worker_assignment(&db_conn, assignment_id)
             .unwrap()
             .unwrap();
-        let globs = parse_comma_separated_globs(&wa.affected_globs.unwrap());
+        let globs: Vec<String> =
+            serde_json::from_str(&wa.affected_globs.unwrap()).unwrap();
         assert_eq!(globs, vec!["src/config.rs", "src/signals.rs"]);
     }
 
@@ -1549,7 +1553,7 @@ mod tests {
             "beads-noop",
             &fake_worktree.to_string_lossy(),
             "coding",
-            Some("src/db.rs"),
+            Some(r#"["src/db.rs"]"#),
         )
         .unwrap();
 
@@ -1578,7 +1582,7 @@ mod tests {
         let wa = db::get_worker_assignment(&db_conn, assignment_id)
             .unwrap()
             .unwrap();
-        assert_eq!(wa.affected_globs, Some("src/db.rs".to_string()));
+        assert_eq!(wa.affected_globs, Some(r#"["src/db.rs"]"#.to_string()));
     }
 
     #[test]
