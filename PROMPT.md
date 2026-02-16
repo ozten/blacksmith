@@ -112,6 +112,39 @@ Use a specific reason: `too-large`, `tests-failing`, `lint-unfixable`, `missing-
 - If task cannot be completed, mark the failure (see above), write PROGRESS.txt, exit cleanly
 - If tests fail, debug and fix within this iteration
 
+## Improvement Recording
+
+Record institutional lessons using `blacksmith improve add` when you encounter reusable insights during your session. This builds the project's knowledge base so future sessions avoid repeated mistakes and adopt proven patterns.
+
+**When to record** (pick at most 2 per session — don't spend turns on this):
+- You discover a non-obvious debugging technique or root cause
+- You find a code pattern that should be followed (or avoided) project-wide
+- You notice a workflow inefficiency (e.g., unnecessary file reads, redundant test runs)
+- A test failure reveals a subtle invariant that isn't documented
+
+**When NOT to record:**
+- Routine task completion (closing a bead is not an insight)
+- Obvious things already in MEMORY.md or PROMPT.md
+- Session-specific context that won't help future sessions
+
+**How to record:**
+```bash
+blacksmith improve add "Short descriptive title" \
+  --category <workflow|cost|reliability|performance|code-quality> \
+  --body "What you learned and why it matters" \
+  --context "Evidence: session number, file, or error message"
+```
+
+**Example:**
+```bash
+blacksmith improve add "Always check Cargo.toml when adding new modules" \
+  --category reliability \
+  --body "New module files need their crate dependencies added to Cargo.toml. Cargo check catches this but only if run before bead closure." \
+  --context "Session 50 closed a bead with uncompilable code because Cargo.toml was missing the fs2 dependency"
+```
+
+Record improvements as you work — don't batch them to the end of the session.
+
 ## Important
 - Do not ask for clarification — make reasonable decisions
 - Do NOT launch explore/research subagents (NO `Task` with `subagent_type: Explore`) — the architecture is in MEMORY.md

@@ -2646,3 +2646,22 @@
 - simple-agent-harness-5hg (P1): Enable 3 parallel agents (was blocked by this bead, now unblocked)
 - simple-agent-harness-56j (P1): Add improvement recording to agent PROMPT.md workflow
 - simple-agent-harness-cgo (P2): Add refactor proposal generation from architecture analysis
+
+--- 2026-02-16 00:40:09 | simple-agent-harness-56j ---
+## Last Session: Add improvement recording to PROMPT.md (2026-02-16)
+
+### What Was Done
+- Implemented bead simple-agent-harness-56j (P1): Add improvement recording to agent PROMPT.md workflow
+- Added "Improvement Recording" section to PROMPT.md with clear guidelines on when/how to use `blacksmith improve add`
+- Includes when to record, when NOT to record, CLI syntax, and a concrete example
+- Limits agents to at most 2 improvements per session to avoid wasting turn budget
+
+### Current State
+- Codebase compiles cleanly (only pre-existing dead_code warnings for not-yet-wired modules)
+- All 1123 tests pass
+- PROMPT.md now instructs agents to record institutional lessons via the improve CLI
+
+### Suggested Next Tasks
+- simple-agent-harness-5hg (P1): Enable 3 parallel agents in blacksmith.toml
+- simple-agent-harness-cgo (P2): Add refactor proposal generation from architecture analysis
+- simple-agent-harness-83g (P3): Add migration map generation for refactor tasks

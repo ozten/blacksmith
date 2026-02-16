@@ -1,18 +1,17 @@
-## Last Session: Wire cargo check gate in bd-finish.sh (2026-02-16)
+## Last Session: Add improvement recording to PROMPT.md (2026-02-16)
 
 ### What Was Done
-- Implemented bead simple-agent-harness-m6l (P0): Post-session cargo check gate
-- Added step 0 to bd-finish.sh that runs `cargo check` before any staging/committing/closing
-- If cargo check fails, the script aborts with exit 1 and prints clear error message
-- This prevents agents from closing beads when the code doesn't compile
-- Addresses the Session 50 incident where singleton.rs P0 was closed despite not compiling
+- Implemented bead simple-agent-harness-56j (P1): Add improvement recording to agent PROMPT.md workflow
+- Added "Improvement Recording" section to PROMPT.md with clear guidelines on when/how to use `blacksmith improve add`
+- Includes when to record, when NOT to record, CLI syntax, and a concrete example
+- Limits agents to at most 2 improvements per session to avoid wasting turn budget
 
 ### Current State
 - Codebase compiles cleanly (only pre-existing dead_code warnings for not-yet-wired modules)
 - All 1123 tests pass
-- bd-finish.sh now has cargo check as a mandatory gate before bead closure
+- PROMPT.md now instructs agents to record institutional lessons via the improve CLI
 
 ### Suggested Next Tasks
-- simple-agent-harness-5hg (P1): Enable 3 parallel agents (was blocked by this bead, now unblocked)
-- simple-agent-harness-56j (P1): Add improvement recording to agent PROMPT.md workflow
+- simple-agent-harness-5hg (P1): Enable 3 parallel agents in blacksmith.toml
 - simple-agent-harness-cgo (P2): Add refactor proposal generation from architecture analysis
+- simple-agent-harness-83g (P3): Add migration map generation for refactor tasks
