@@ -2505,3 +2505,27 @@
 - simple-agent-harness-90v (P2): Implement ensure_fresh_metadata for scheduler integration (now unblocked)
 - simple-agent-harness-buv (P2): Add metadata drift detection between regenerations (now unblocked)
 - simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis
+
+--- 2026-02-16 00:23:49 | simple-agent-harness-90v ---
+## Last Session: Implement ensure_fresh_metadata for scheduler integration (2026-02-16)
+
+### What Was Done
+- Implemented bead simple-agent-harness-90v: ensure_fresh_metadata for scheduler integration
+- Added to src/metadata_regen.rs:
+  - `TaskMetadata` struct combining IntentAnalysis (Layer 1) + FileResolution (Layer 2)
+  - `TaskMetadata::affected_globs()` — extracts file paths from resolution for scheduler conflict detection
+  - `ensure_fresh_metadata()` — orchestrates both layers, returning combined TaskMetadata or None if no intent exists
+  - 5 new tests: returns None without intent, combined on cache hit, combined on regeneration, affected_globs from resolution, empty globs when no matches
+- Added to src/scheduler.rs:
+  - `enrich_with_metadata()` — enriches a ReadyBead's affected_globs from metadata when no explicit `affected:` line in design field. Explicit declarations take precedence over inferred metadata.
+  - 3 new tests: skips bead with existing globs, populates from metadata, leaves None when no intent
+
+### Current State
+- Compilation clean (only pre-existing dead_code warnings for not-yet-wired modules)
+- Full test suite: 1089 passed, 0 failed, 1 ignored
+- ensure_fresh_metadata + enrich_with_metadata ready for coordinator to call during scheduling loop
+
+### Suggested Next Tasks
+- simple-agent-harness-buv (P2): Add metadata drift detection between regenerations
+- simple-agent-harness-a9n (P2): Implement structural metrics aggregator for architecture analysis
+- Wire enrich_with_metadata into coordinator.rs scheduling loop (could be a follow-up task)

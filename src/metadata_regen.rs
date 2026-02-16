@@ -9,7 +9,7 @@ use rusqlite::{Connection, Result};
 use std::path::Path;
 
 use crate::file_resolution::{self, FileResolution};
-use crate::intent;
+use crate::intent::{self, IntentAnalysis};
 
 /// Outcome of an `ensure_fresh` call.
 #[derive(Debug, PartialEq)]
@@ -20,6 +20,75 @@ pub enum RefreshOutcome {
     Regenerated,
     /// No intent analysis exists for this task — cannot resolve.
     NoIntent,
+}
+
+/// Combined metadata for a task: intent analysis (Layer 1) + file resolution (Layer 2).
+///
+/// This is the value returned by `ensure_fresh_metadata()` and represents everything
+/// the scheduler needs to know about a task's impact on the codebase.
+#[derive(Debug, Clone)]
+pub struct TaskMetadata {
+    /// The task identifier.
+    pub task_id: String,
+    /// Layer 1: LLM-derived intent analysis (concepts + reasoning).
+    pub intent: IntentAnalysis,
+    /// Layer 2: File resolution mapping concepts to concrete files/modules.
+    pub resolution: FileResolution,
+}
+
+impl TaskMetadata {
+    /// Extract affected file globs suitable for the scheduler's conflict detection.
+    ///
+    /// Converts the resolved files from file resolution into glob patterns.
+    /// Individual files become exact paths; modules with multiple files become
+    /// directory globs (e.g. `src/auth/**`).
+    pub fn affected_globs(&self) -> Vec<String> {
+        let mut globs = Vec::new();
+        for mapping in &self.resolution.mappings {
+            for file in &mapping.resolved_files {
+                if !globs.contains(file) {
+                    globs.push(file.clone());
+                }
+            }
+        }
+        globs.sort();
+        globs
+    }
+}
+
+/// Ensure both intent analysis and file resolution are fresh for a task.
+///
+/// This is the main entry point for the scheduler integration. It:
+/// 1. Looks up or regenerates the intent analysis (Layer 1)
+/// 2. Looks up or regenerates the file resolution (Layer 2)
+/// 3. Returns combined `TaskMetadata` with both layers
+///
+/// Returns `None` if the task has no intent analysis (e.g., LLM command not configured
+/// and no prior analysis exists).
+pub fn ensure_fresh_metadata(
+    conn: &Connection,
+    repo_root: &Path,
+    task_id: &str,
+    current_commit: &str,
+) -> Result<Option<TaskMetadata>> {
+    let (outcome, resolution) = ensure_fresh(conn, repo_root, task_id, current_commit)?;
+
+    match outcome {
+        RefreshOutcome::NoIntent => Ok(None),
+        _ => {
+            // Intent must exist if we got CacheHit or Regenerated
+            let intent = intent::get_by_task_id(conn, task_id)?
+                .expect("intent must exist after successful ensure_fresh");
+            let resolution =
+                resolution.expect("resolution must exist after successful ensure_fresh");
+
+            Ok(Some(TaskMetadata {
+                task_id: task_id.to_string(),
+                intent,
+                resolution,
+            }))
+        }
+    }
 }
 
 /// Ensure the file resolution for a task is fresh relative to `current_commit`.
@@ -390,5 +459,109 @@ mod tests {
         assert_eq!(report.regenerated, 2); // task-1 and task-4
         assert_eq!(report.already_fresh, 1); // task-2
         assert_eq!(report.skipped_no_intent, 1); // task-3
+    }
+
+    // --- ensure_fresh_metadata tests ---
+
+    #[test]
+    fn ensure_fresh_metadata_returns_none_without_intent() {
+        let conn = setup_db();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        let result = ensure_fresh_metadata(&conn, tmp.path(), "no-task", "commit1").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn ensure_fresh_metadata_returns_combined_on_cache_hit() {
+        let conn = setup_db();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        store_intent(&conn, "task-1", "hash1");
+        store_resolution(&conn, "task-1", "commit-a", "hash1");
+
+        let meta = ensure_fresh_metadata(&conn, tmp.path(), "task-1", "commit-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.task_id, "task-1");
+        assert_eq!(meta.intent.task_id, "task-1");
+        assert_eq!(meta.intent.content_hash, "hash1");
+        assert_eq!(meta.resolution.base_commit, "commit-a");
+    }
+
+    #[test]
+    fn ensure_fresh_metadata_returns_combined_on_regeneration() {
+        let conn = setup_db();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        store_intent(&conn, "task-1", "hash1");
+        // No resolution stored → will regenerate
+
+        let meta = ensure_fresh_metadata(&conn, tmp.path(), "task-1", "commit-new")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.task_id, "task-1");
+        assert_eq!(meta.intent.content_hash, "hash1");
+        assert_eq!(meta.resolution.base_commit, "commit-new");
+    }
+
+    #[test]
+    fn task_metadata_affected_globs_from_resolution() {
+        let conn = setup_db();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "mod config;\nfn main() {}").unwrap();
+        std::fs::write(tmp.path().join("src/config.rs"), "pub struct Config;").unwrap();
+
+        // Store intent with concept "config" so resolution finds config.rs
+        let analysis = IntentAnalysis {
+            task_id: "task-globs".to_string(),
+            content_hash: "hg".to_string(),
+            target_areas: vec![TargetArea {
+                concept: "config".to_string(),
+                reasoning: "config changes".to_string(),
+            }],
+        };
+        intent::store(&conn, &analysis).unwrap();
+
+        let meta = ensure_fresh_metadata(&conn, tmp.path(), "task-globs", "commit-x")
+            .unwrap()
+            .unwrap();
+
+        let globs = meta.affected_globs();
+        assert!(!globs.is_empty());
+        assert!(globs.iter().any(|g| g.contains("config")));
+    }
+
+    #[test]
+    fn task_metadata_affected_globs_empty_when_no_matches() {
+        let conn = setup_db();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
+
+        // Intent with concept that won't match any files
+        let analysis = IntentAnalysis {
+            task_id: "task-noglobs".to_string(),
+            content_hash: "hng".to_string(),
+            target_areas: vec![TargetArea {
+                concept: "nonexistent_module".to_string(),
+                reasoning: "nothing".to_string(),
+            }],
+        };
+        intent::store(&conn, &analysis).unwrap();
+
+        let meta = ensure_fresh_metadata(&conn, tmp.path(), "task-noglobs", "commit-y")
+            .unwrap()
+            .unwrap();
+
+        let globs = meta.affected_globs();
+        assert!(globs.is_empty());
     }
 }
