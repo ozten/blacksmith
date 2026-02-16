@@ -621,7 +621,7 @@ fn print_progress_line(
 }
 
 /// Build the "Progress: A/B beads | avg Xm/bead | ETA: ~Zm" string from DB metrics.
-fn build_progress_string(conn: &rusqlite::Connection, workers: u32) -> Option<String> {
+pub(crate) fn build_progress_string(conn: &rusqlite::Connection, workers: u32) -> Option<String> {
     let all_metrics = db::all_bead_metrics(conn).ok()?;
     let completed = all_metrics
         .iter()
@@ -677,7 +677,7 @@ fn build_progress_string(conn: &rusqlite::Connection, workers: u32) -> Option<St
 }
 
 /// Format seconds as a compact human-readable duration (e.g., "45s", "5m", "1h 30m").
-fn format_duration_secs(secs: u64) -> String {
+pub(crate) fn format_duration_secs(secs: u64) -> String {
     if secs < 60 {
         format!("{}s", secs)
     } else if secs < 3600 {

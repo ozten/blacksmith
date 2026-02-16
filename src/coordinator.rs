@@ -4,15 +4,19 @@
 /// It reads ready beads, uses the scheduler to find non-conflicting assignments,
 /// spawns workers in git worktrees, and polls for completions.
 /// Completed workers are queued for sequential integration into main.
+use crate::adapters;
 use crate::config::HarnessConfig;
 use crate::cycle_detect;
 use crate::data_dir::DataDir;
 use crate::db;
 use crate::estimation::BeadNode;
+use crate::ingest;
 use crate::integrator::{CircuitBreaker, IntegrationQueue, TrippedFailure};
-use crate::pool::{PoolError, WorkerPool};
+use crate::pool::{PoolError, SessionOutcome, WorkerPool};
+use crate::runner;
 use crate::scheduler::{self, InProgressAssignment, ReadyBead};
 use crate::signals::SignalHandler;
+use crate::status::{HarnessState, StatusTracker};
 use crate::worktree;
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -114,8 +118,35 @@ pub async fn run(
     let mut consecutive_no_work = 0u32;
     const MAX_CONSECUTIVE_NO_WORK: u32 = 3;
 
+    // StatusTracker: write state transitions so `--status` works
+    let status_path = data_dir.status();
+    let mut status = StatusTracker::new(status_path, 0, initial_session_id);
+    status.update(HarnessState::Starting);
+
+    // Compile metrics extraction rules once at startup (same as runner.rs)
+    let extraction_rules: Vec<crate::config::CompiledRule> = config
+        .metrics
+        .extract
+        .rules
+        .iter()
+        .filter_map(|r| match r.compile() {
+            Ok(compiled) => Some(compiled),
+            Err(e) => {
+                tracing::warn!(error = %e, "invalid extraction rule, skipping");
+                None
+            }
+        })
+        .collect();
+
+    // Create adapter for JSONL metric extraction
+    let resolved_agent = config.agent.resolved_coding();
+    let adapter_name =
+        adapters::resolve_adapter_name(resolved_agent.adapter.as_deref(), &resolved_agent.command);
+    let adapter = adapters::create_adapter(adapter_name);
+
     tracing::info!(
         max_workers = config.workers.max,
+        adapter = adapter_name,
         "coordinator starting multi-agent mode"
     );
 
@@ -140,6 +171,8 @@ pub async fn run(
         // Check for shutdown signals
         if signals.shutdown_requested() {
             tracing::info!("shutdown requested, stopping coordinator");
+            status.update(HarnessState::ShuttingDown);
+            status.remove();
             return CoordinatorSummary {
                 completed_beads,
                 failed_beads,
@@ -152,6 +185,8 @@ pub async fn run(
             .is_detected()
         {
             tracing::info!("STOP file detected, stopping coordinator");
+            status.update(HarnessState::ShuttingDown);
+            status.remove();
             return CoordinatorSummary {
                 completed_beads,
                 failed_beads,
@@ -166,6 +201,11 @@ pub async fn run(
                 tracing::warn!(error = %e, worker_id = outcome.worker_id, "failed to record outcome");
             }
 
+            // Ingest JSONL metrics from the worker's output file
+            let ingest_result = ingest_worker_metrics(
+                outcome, &db_conn, &extraction_rules, adapter.as_ref(),
+            );
+
             let succeeded = outcome.exit_code == Some(0);
             if succeeded {
                 tracing::info!(
@@ -175,6 +215,11 @@ pub async fn run(
                 // Worker state is now Completed — will be picked up for integration below
             } else {
                 failed_beads += 1;
+                // Print failure progress line
+                print_coordinator_progress(
+                    outcome, false, completed_beads, failed_beads,
+                    ingest_result.as_ref(), &db_conn, config.workers.max,
+                );
                 tracing::warn!(
                     worker_id = outcome.worker_id,
                     exit_code = ?outcome.exit_code,
@@ -210,6 +255,13 @@ pub async fn run(
 
                 if result.success {
                     completed_beads += 1;
+
+                    // Print progress using DB state (metrics already ingested during poll phase)
+                    print_coordinator_integration_progress(
+                        worker_id, &bead_id, completed_beads, failed_beads,
+                        &db_conn, config.workers.max,
+                    );
+
                     tracing::info!(
                         worker_id,
                         bead_id = %bead_id,
@@ -265,6 +317,8 @@ pub async fn run(
                 consecutive_no_work += 1;
                 if consecutive_no_work >= MAX_CONSECUTIVE_NO_WORK {
                     tracing::info!("no work available and no active workers, exiting");
+                    status.update(HarnessState::ShuttingDown);
+                    status.remove();
                     return CoordinatorSummary {
                         completed_beads,
                         failed_beads,
@@ -307,6 +361,9 @@ pub async fn run(
                         // Persist session counter so other subsystems see
                         // the updated value if the coordinator crashes/restarts.
                         save_counter(&counter_path, pool.next_session_id());
+                        status.set_iteration(completed_beads);
+                        status.set_global_iteration(pool.next_session_id());
+                        status.update(HarnessState::SessionRunning);
                         tracing::info!(
                             worker_id,
                             assignment_id,
@@ -320,6 +377,11 @@ pub async fn run(
                     }
                 }
             }
+        }
+
+        // Update status between poll cycles
+        if pool.active_count() == 0 {
+            status.update(HarnessState::Idle);
         }
 
         // Sleep before next poll cycle
@@ -782,6 +844,113 @@ fn load_counter(path: &std::path::Path) -> u64 {
 fn save_counter(path: &std::path::Path, value: u64) {
     if let Err(e) = std::fs::write(path, value.to_string()) {
         tracing::error!(error = %e, path = %path.display(), "failed to save iteration counter");
+    }
+}
+
+/// Ingest JSONL metrics from a worker's output file into the metrics DB.
+///
+/// Called after each worker completion (success or failure), same as the serial runner does.
+/// Returns the IngestResult for use in the progress line.
+fn ingest_worker_metrics(
+    outcome: &SessionOutcome,
+    db_conn: &Connection,
+    extraction_rules: &[crate::config::CompiledRule],
+    adapter: &dyn crate::adapters::AgentAdapter,
+) -> Option<ingest::IngestResult> {
+    match ingest::ingest_session_with_rules(
+        db_conn,
+        outcome.session_id as i64,
+        &outcome.output_file,
+        outcome.exit_code,
+        extraction_rules,
+        adapter,
+    ) {
+        Ok(m) => {
+            tracing::info!(
+                worker_id = outcome.worker_id,
+                session = outcome.session_id,
+                turns = m.turns_total,
+                cost_usd = format!("{:.4}", m.cost_estimate_usd),
+                "JSONL metrics ingested"
+            );
+            Some(m)
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                worker_id = outcome.worker_id,
+                session = outcome.session_id,
+                "failed to ingest JSONL metrics"
+            );
+            None
+        }
+    }
+}
+
+/// Print a progress line after a worker coding failure.
+///
+/// Format: `[bead beads-abc] worker 2 FAILED in 5m | Progress: 8/15 beads | avg 5m/bead | ETA: ~42m @ 3 workers`
+fn print_coordinator_progress(
+    outcome: &SessionOutcome,
+    _succeeded: bool,
+    completed_beads: u32,
+    failed_beads: u32,
+    ingest_result: Option<&ingest::IngestResult>,
+    db_conn: &Connection,
+    workers: u32,
+) {
+    let duration_str = runner::format_duration_secs(outcome.duration.as_secs());
+
+    let turns_str = ingest_result
+        .map(|m| format!("{} turns", m.turns_total))
+        .unwrap_or_default();
+
+    // Build the session summary part
+    let session_part = if turns_str.is_empty() {
+        format!(
+            "[worker {}] FAILED in {} ({}c/{}f)",
+            outcome.worker_id, duration_str, completed_beads, failed_beads
+        )
+    } else {
+        format!(
+            "[worker {}] FAILED in {} ({}) ({}c/{}f)",
+            outcome.worker_id, duration_str, turns_str, completed_beads, failed_beads
+        )
+    };
+
+    // Build the progress + ETA part from bead metrics
+    let progress_part = runner::build_progress_string(db_conn, workers).unwrap_or_default();
+
+    if progress_part.is_empty() {
+        println!("{}", session_part);
+    } else {
+        println!("{} | {}", session_part, progress_part);
+    }
+}
+
+/// Print a progress line after successful integration.
+///
+/// Format: `[bead beads-abc] worker 2 integrated | Progress: 8/15 beads | avg 5m/bead | ETA: ~42m @ 3 workers`
+fn print_coordinator_integration_progress(
+    worker_id: u32,
+    bead_id: &str,
+    completed_beads: u32,
+    failed_beads: u32,
+    db_conn: &Connection,
+    workers: u32,
+) {
+    let session_part = format!(
+        "[bead {}] worker {} integrated ({}c/{}f)",
+        bead_id, worker_id, completed_beads, failed_beads
+    );
+
+    // Build the progress + ETA part from bead metrics
+    let progress_part = runner::build_progress_string(db_conn, workers).unwrap_or_default();
+
+    if progress_part.is_empty() {
+        println!("{}", session_part);
+    } else {
+        println!("{} | {}", session_part, progress_part);
     }
 }
 

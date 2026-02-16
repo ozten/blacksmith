@@ -11,7 +11,7 @@ Every time you are about to call a tool, ask: "Is there another independent call
 - Session start: `bd ready` + `Read PROGRESS.txt` → ONE turn, TWO tool calls
 - Reading source + test: `Read foo.rs` + `Read foo_test.rs` → ONE turn
 - Multiple greps: `Grep("pattern1")` + `Grep("pattern2")` → ONE turn
-- Session end: `Bash(cargo clippy --fix)` + `Bash(cargo test)` → ONE turn (if they don't depend on each other's output)
+- Session end: `Bash(cargo clippy --fix)` + `Bash(cargo test --release)` → ONE turn (if they don't depend on each other's output)
 - Reading multiple related files: `Read config.rs` + `Read main.rs` → ONE turn
 
 **A session with ZERO parallel calls is a failure.** Target at least 5 turns with 2+ parallel calls per session.
@@ -78,7 +78,7 @@ For the selected task (e.g., bd-X):
    **4b. Code quality gates:**
    ```bash
    # Run full test suite FIRST, then lint in parallel:
-   cargo test
+   cargo test --release
    # Then in ONE turn with TWO parallel Bash calls:
    cargo clippy --fix --allow-dirty
    cargo fmt --check
@@ -163,7 +163,7 @@ Record improvements as you work — don't batch them to the end of the session.
 - Do NOT launch explore/research subagents (NO `Task` with `subagent_type: Explore`) — the architecture is in MEMORY.md
 - Do NOT re-read files you already know from MEMORY.md
 - Prefer small, atomic changes over large refactors
-- Always run `cargo test` before committing
+- Always run `cargo test --release` before committing
 - Always run `cargo clippy --fix --allow-dirty` then `cargo fmt` before committing — exactly ONCE each
 - Always use `./bd-finish.sh` to close out — do NOT manually run git add/commit/push/bd close/bd sync
 - **EFFICIENCY**: Re-read Rules A, B, C above. Every text-only turn and every sequential-when-parallel tool call wastes your limited turn budget. Aim for 5+ parallel turns per session and 0 narration-only turns.

@@ -23,5 +23,9 @@ fs2 = "0.4"
 [profile.dev]
 debug = "line-tables-only"   # Shrink debug info ~60%; backtraces still work
 
+[profile.release]
+opt-level = 1       # Fast compile (~debug speed), small artifacts (~release size)
+debug = false
+
 [dev-dependencies]
 filetime = "0.2.27"

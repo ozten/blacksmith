@@ -63,6 +63,10 @@ pub struct Worker {
     pub bead_id: Option<String>,
     /// Path to the worker's worktree (set when coding).
     pub worktree_path: Option<PathBuf>,
+    /// Path to the worker's output file (set when coding).
+    pub output_file: Option<PathBuf>,
+    /// Session ID for this worker's output file (set when coding).
+    pub session_id: Option<u64>,
     /// Tokio JoinHandle for the agent process (set when coding).
     child_handle: Option<tokio::task::JoinHandle<SessionOutcome>>,
 }
@@ -79,6 +83,10 @@ pub struct SessionOutcome {
     pub duration: std::time::Duration,
     /// Total bytes written to the output file.
     pub output_bytes: u64,
+    /// Path to the output file for this session.
+    pub output_file: PathBuf,
+    /// Numeric session ID (for metric ingestion).
+    pub session_id: u64,
 }
 
 /// The worker pool manages up to `max` concurrent agent sessions.
@@ -153,6 +161,8 @@ impl WorkerPool {
                 assignment_id: None,
                 bead_id: None,
                 worktree_path: None,
+                output_file: None,
+                session_id: None,
                 child_handle: None,
             })
             .collect();
@@ -249,7 +259,7 @@ impl WorkerPool {
 
         // Spawn the agent process in the worktree
         let handle =
-            spawn_agent_in_worktree(worker_id, agent_config, &wt_path, &output_file, prompt)?;
+            spawn_agent_in_worktree(worker_id, agent_config, &wt_path, &output_file, prompt, session_id)?;
 
         // Update worker state
         let worker = &mut self.workers[worker_idx];
@@ -257,6 +267,8 @@ impl WorkerPool {
         worker.assignment_id = Some(assignment_id);
         worker.bead_id = Some(bead_id.to_string());
         worker.worktree_path = Some(wt_path);
+        worker.output_file = Some(output_file.clone());
+        worker.session_id = Some(session_id);
         worker.child_handle = Some(handle);
 
         tracing::info!(worker_id, bead_id, assignment_id, "worker spawned");
@@ -311,6 +323,8 @@ impl WorkerPool {
                             exit_code: None,
                             duration: std::time::Duration::ZERO,
                             output_bytes: 0,
+                            output_file: worker.output_file.clone().unwrap_or_default(),
+                            session_id: worker.session_id.unwrap_or(0),
                         });
                     }
                 }
@@ -416,6 +430,8 @@ impl WorkerPool {
         worker.assignment_id = None;
         worker.bead_id = None;
         worker.worktree_path = None;
+        worker.output_file = None;
+        worker.session_id = None;
         worker.child_handle = None;
 
         Ok(())
@@ -474,6 +490,7 @@ fn spawn_agent_in_worktree(
     worktree_path: &Path,
     output_path: &Path,
     prompt: &str,
+    session_id: u64,
 ) -> Result<tokio::task::JoinHandle<SessionOutcome>, PoolError> {
     // Create/truncate the output file
     let output_file = std::fs::File::create(output_path).map_err(PoolError::Spawn)?;
@@ -523,6 +540,8 @@ fn spawn_agent_in_worktree(
             exit_code,
             duration,
             output_bytes,
+            output_file: output_path_owned,
+            session_id,
         }
     });
 

@@ -866,7 +866,7 @@ impl IntegrationQueue {
         let cargo_toml = dir.join("Cargo.toml");
         if cargo_toml.exists() {
             match Command::new("cargo")
-                .args(["test"])
+                .args(["test", "--release"])
                 .current_dir(dir)
                 .output()
             {
