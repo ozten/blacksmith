@@ -278,8 +278,32 @@ pub fn handle_finish(
     }
     eprintln!("[0b] Test gate passed\n");
 
-    // 0c. Deliverable verification
-    eprintln!("[0c] Verifying bead deliverables...");
+    // 0c. Lint gate
+    eprintln!("[0c] Running lint gate...");
+    if let Err(e) = run_gate("lint", &gates_config.lint, &working_dir) {
+        eprintln!("\n=== LINT GATE FAILED ===");
+        eprintln!("Bead {bead_id} will NOT be closed. Fix lint errors first.");
+        return FinishResult {
+            success: false,
+            message: e,
+        };
+    }
+    eprintln!("[0c] Lint gate passed\n");
+
+    // 0d. Format gate
+    eprintln!("[0d] Running format gate...");
+    if let Err(e) = run_gate("format", &gates_config.format, &working_dir) {
+        eprintln!("\n=== FORMAT GATE FAILED ===");
+        eprintln!("Bead {bead_id} will NOT be closed. Fix formatting first.");
+        return FinishResult {
+            success: false,
+            message: e,
+        };
+    }
+    eprintln!("[0d] Format gate passed\n");
+
+    // 0e. Deliverable verification
+    eprintln!("[0e] Verifying bead deliverables...");
     if let Err(e) = verify_deliverables(bead_id, &working_dir) {
         eprintln!("\n=== DELIVERABLE VERIFICATION FAILED ===");
         eprintln!("Bead {bead_id} will NOT be closed.");
@@ -288,7 +312,7 @@ pub fn handle_finish(
             message: e,
         };
     }
-    eprintln!("[0c] Deliverable verification passed\n");
+    eprintln!("[0e] Deliverable verification passed\n");
 
     // --- Step 1: Append PROGRESS.txt to PROGRESS_LOG.txt ---
     let progress_path = working_dir.join("PROGRESS.txt");
@@ -593,5 +617,31 @@ mod tests {
         let result = handle_finish("test-bead", "test message", &[], &gates);
         assert!(!result.success);
         assert!(result.message.contains("test gate failed"));
+    }
+
+    #[test]
+    fn test_handle_finish_lint_gate_failure() {
+        let gates = QualityGatesConfig {
+            check: vec!["true".to_string()],
+            test: vec!["true".to_string()],
+            lint: vec!["exit 1".to_string()],
+            format: vec![],
+        };
+        let result = handle_finish("test-bead", "test message", &[], &gates);
+        assert!(!result.success);
+        assert!(result.message.contains("lint gate failed"));
+    }
+
+    #[test]
+    fn test_handle_finish_format_gate_failure() {
+        let gates = QualityGatesConfig {
+            check: vec!["true".to_string()],
+            test: vec!["true".to_string()],
+            lint: vec!["true".to_string()],
+            format: vec!["exit 1".to_string()],
+        };
+        let result = handle_finish("test-bead", "test message", &[], &gates);
+        assert!(!result.success);
+        assert!(result.message.contains("format gate failed"));
     }
 }
