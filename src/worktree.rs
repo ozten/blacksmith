@@ -458,7 +458,7 @@ mod tests {
         let path_b = create(dir.path(), &wt_dir, 1, "beads-b", "main").unwrap();
 
         // Only path_a is active; path_b should be cleaned up
-        let cleaned = cleanup_orphans(dir.path(), &wt_dir, &[path_a.clone()]).unwrap();
+        let cleaned = cleanup_orphans(dir.path(), &wt_dir, std::slice::from_ref(&path_a)).unwrap();
         assert_eq!(cleaned.len(), 1);
         assert_eq!(cleaned[0], path_b);
 

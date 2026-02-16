@@ -306,10 +306,7 @@ Fixed.
         let path = write_file(dir.path(), "aider.log", content);
         let adapter = AiderAdapter::new();
         let metrics = adapter.extract_builtin_metrics(&path).unwrap();
-        assert!(metrics
-            .iter()
-            .find(|(k, _)| k == "cost.estimate_usd")
-            .is_none());
+        assert!(!metrics.iter().any(|(k, _)| k == "cost.estimate_usd"));
     }
 
     #[test]

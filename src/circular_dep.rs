@@ -220,9 +220,9 @@ mod tests {
                 Module {
                     name: name.to_string(),
                     root_path: PathBuf::from(root),
-                    files: files.iter().map(|f| PathBuf::from(f)).collect(),
+                    files: files.iter().map(PathBuf::from).collect(),
                     has_entry_point: entry.is_some(),
-                    entry_point: entry.map(|e| PathBuf::from(e)),
+                    entry_point: entry.map(PathBuf::from),
                     submodules: Vec::new(),
                 },
             );
@@ -234,10 +234,7 @@ mod tests {
     fn make_graph(edges: &[(&str, &[&str])]) -> HashMap<PathBuf, Vec<PathBuf>> {
         let mut graph = HashMap::new();
         for (src, deps) in edges {
-            graph.insert(
-                PathBuf::from(src),
-                deps.iter().map(|d| PathBuf::from(d)).collect(),
-            );
+            graph.insert(PathBuf::from(src), deps.iter().map(PathBuf::from).collect());
         }
         graph
     }

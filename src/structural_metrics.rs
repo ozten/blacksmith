@@ -380,10 +380,7 @@ mod tests {
             source.push_str(&format!("// line {i}\n"));
         }
 
-        let tmp = setup_project(&[
-            ("main.rs", &format!("mod god;\nfn main() {{}}")),
-            ("god.rs", &source),
-        ]);
+        let tmp = setup_project(&[("main.rs", "mod god;\nfn main() {}"), ("god.rs", &source)]);
         let report = analyze(tmp.path());
 
         let god_file = report
@@ -412,7 +409,7 @@ mod tests {
         let report = analyze(tmp.path());
         assert!(report.cycles.is_empty());
 
-        for (_, metrics) in &report.modules {
+        for metrics in report.modules.values() {
             assert!(!metrics.in_cycle);
         }
     }

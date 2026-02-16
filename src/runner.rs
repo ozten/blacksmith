@@ -1682,7 +1682,6 @@ printf '{"type":"result","duration_ms":5000,"total_cost_usd":0.42,"num_turns":2,
     async fn test_run_ingestion_does_not_block_on_failure() {
         let dir = tempdir().unwrap();
         let config = test_config(dir.path(), "echo", vec!["hello".to_string()]);
-        config.session.max_iterations;
 
         std::fs::write(&config.session.prompt_file, "test prompt").unwrap();
 

@@ -481,14 +481,8 @@ mod tests {
         let path = write_jsonl(dir.path(), lines);
         let adapter = OpencodeAdapter::new();
         let metrics = adapter.extract_builtin_metrics(&path).unwrap();
-        assert!(metrics
-            .iter()
-            .find(|(k, _)| k == "cost.input_tokens")
-            .is_none());
-        assert!(metrics
-            .iter()
-            .find(|(k, _)| k == "cost.output_tokens")
-            .is_none());
+        assert!(!metrics.iter().any(|(k, _)| k == "cost.input_tokens"));
+        assert!(!metrics.iter().any(|(k, _)| k == "cost.output_tokens"));
     }
 
     #[test]
@@ -726,10 +720,7 @@ mod tests {
         let path = write_jsonl(dir.path(), lines);
         let adapter = OpencodeAdapter::new();
         let metrics = adapter.extract_builtin_metrics(&path).unwrap();
-        assert!(metrics
-            .iter()
-            .find(|(k, _)| k == "session.exit_code")
-            .is_none());
+        assert!(!metrics.iter().any(|(k, _)| k == "session.exit_code"));
     }
 
     #[test]

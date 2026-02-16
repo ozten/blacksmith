@@ -467,9 +467,6 @@ mod tests {
         let adapter = CodexAdapter::new();
         let metrics = adapter.extract_builtin_metrics(&path).unwrap();
         // exit_code should not be present when no commands executed
-        assert!(metrics
-            .iter()
-            .find(|(k, _)| k == "session.exit_code")
-            .is_none());
+        assert!(!metrics.iter().any(|(k, _)| k == "session.exit_code"));
     }
 }
