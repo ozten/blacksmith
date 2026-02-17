@@ -126,7 +126,7 @@ pub fn spawn_poller(registry: Registry, poll_store: PollStore, poll_interval_sec
                 reg.list()
             };
 
-            let poll_improvements = tick_count == 0
+            let poll_slow = tick_count == 0
                 || (tick_count * poll_interval_secs)
                     .is_multiple_of(improvements_interval.as_secs());
 
@@ -135,7 +135,7 @@ pub fn spawn_poller(registry: Registry, poll_store: PollStore, poll_interval_sec
             for inst in &instances {
                 let client = client.clone();
                 let url = inst.url.clone();
-                let poll_impr = poll_improvements;
+                let poll_slow_data = poll_slow;
                 let needs_project = {
                     let store = poll_store.read().await;
                     store
@@ -146,7 +146,7 @@ pub fn spawn_poller(registry: Registry, poll_store: PollStore, poll_interval_sec
                 };
 
                 handles.push(tokio::spawn(async move {
-                    poll_instance(&client, &url, needs_project, poll_impr).await
+                    poll_instance(&client, &url, needs_project, poll_slow_data).await
                 }));
             }
 
@@ -208,7 +208,7 @@ async fn poll_instance(
     client: &reqwest::Client,
     base_url: &str,
     fetch_project: bool,
-    fetch_improvements: bool,
+    fetch_slow_data: bool,
 ) -> (bool, InstancePollData) {
     let mut data = InstancePollData::default();
 
@@ -223,41 +223,36 @@ async fn poll_instance(
         return (false, data);
     }
 
-    // Build URLs
+    // Fast-changing: status + metrics (every poll cycle)
     let status_url = format!("{base_url}/api/status");
-    let beads_url = format!("{base_url}/api/beads");
     let metrics_url = format!("{base_url}/api/metrics/summary");
-    let project_url = format!("{base_url}/api/project");
-    let improvements_url = format!("{base_url}/api/improvements");
-
-    // Poll all endpoints concurrently
     let status_fut = fetch_json(client, &status_url);
-    let beads_fut = fetch_json(client, &beads_url);
     let metrics_fut = fetch_json(client, &metrics_url);
-
-    let project_fut = if fetch_project {
-        Some(fetch_json(client, &project_url))
-    } else {
-        None
-    };
-
-    let improvements_fut = if fetch_improvements {
-        Some(fetch_json(client, &improvements_url))
-    } else {
-        None
-    };
-
-    let (status, beads, metrics) = tokio::join!(status_fut, beads_fut, metrics_fut);
+    let (status, metrics) = tokio::join!(status_fut, metrics_fut);
     data.status_data = status;
-    data.beads_data = beads;
     data.metrics_data = metrics;
 
-    if let Some(fut) = project_fut {
-        data.project_info = fut.await;
-    }
+    // Slow-changing: beads, improvements, project (every 30s)
+    if fetch_slow_data {
+        let beads_url = format!("{base_url}/api/beads");
+        let improvements_url = format!("{base_url}/api/improvements");
+        let beads_fut = fetch_json(client, &beads_url);
+        let improvements_fut = fetch_json(client, &improvements_url);
 
-    if let Some(fut) = improvements_fut {
-        data.improvements_data = fut.await;
+        let project_url = format!("{base_url}/api/project");
+        let project_fut = if fetch_project {
+            Some(fetch_json(client, &project_url))
+        } else {
+            None
+        };
+
+        let (beads, improvements) = tokio::join!(beads_fut, improvements_fut);
+        data.beads_data = beads;
+        data.improvements_data = improvements;
+
+        if let Some(fut) = project_fut {
+            data.project_info = fut.await;
+        }
     }
 
     (true, data)
