@@ -1,18 +1,32 @@
-## Session: blacksmith init creates config.toml (simple-agent-harness-950)
+## Session: E2E smoke test for blacksmith-ui (simple-agent-harness-949)
 
 ### Completed
-- Added `config()` accessor to `DataDir` returning `.blacksmith/config.toml` path
-- Updated `DataDir::init()` to write a default `config.toml` when it doesn't already exist
-- Default config includes commented sections for [agent], [session], and [storage]
-- Existing config is never overwritten (idempotent behavior preserved)
-- Added 3 new tests: config_path, init_creates_config, init_does_not_overwrite_existing_config
+- Created `scripts/smoke-test-ui.sh` — automated smoke test that:
+  - Starts `blacksmith serve` on a test port (18420) against a real project
+  - Validates all serve API endpoints return HTTP 200
+  - Checks JSON payload fields (health.ok, project.name)
+  - Tests session/transcript/stream endpoints if sessions exist
+  - Starts `blacksmith-ui` with a temporary config pointing at the serve instance
+  - Validates all dashboard API endpoints including proxied transcript routes
+  - Reports PASS/FAIL summary with failure signatures
+  - Clean teardown of both processes on exit
+- Updated `docs/dashboard.md` with Smoke Testing section documenting:
+  - Quick start commands
+  - What each phase checks
+  - How to detect regressions
+  - Expected output format
+  - Failure signature table
+- Updated `docs/troubleshooting.md` with Dashboard Smoke Test Failures section
 
 ### Files Changed
-- src/data_dir.rs: Added config() accessor, DEFAULT_CONFIG const, config write in init(), new tests
+- scripts/smoke-test-ui.sh (new)
+- docs/dashboard.md (added Smoke Testing section)
+- docs/troubleshooting.md (added Dashboard Smoke Test Failures section)
 
 ### Current State
 - All 1096 tests pass
 - Zero clippy warnings, formatting clean
 
 ### Suggested Next Tasks
-- simple-agent-harness-949: Add end-to-end smoke verification for blacksmith-ui against cantrip
+- Run the smoke test against cantrip to validate it works end-to-end
+- Consider adding the smoke test to CI once infrastructure supports it

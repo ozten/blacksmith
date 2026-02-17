@@ -3206,3 +3206,37 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Tasks
 - simple-agent-harness-949: Add end-to-end smoke verification for blacksmith-ui against cantrip
+
+--- 2026-02-17 04:34:22 | simple-agent-harness-949 ---
+## Session: E2E smoke test for blacksmith-ui (simple-agent-harness-949)
+
+### Completed
+- Created `scripts/smoke-test-ui.sh` — automated smoke test that:
+  - Starts `blacksmith serve` on a test port (18420) against a real project
+  - Validates all serve API endpoints return HTTP 200
+  - Checks JSON payload fields (health.ok, project.name)
+  - Tests session/transcript/stream endpoints if sessions exist
+  - Starts `blacksmith-ui` with a temporary config pointing at the serve instance
+  - Validates all dashboard API endpoints including proxied transcript routes
+  - Reports PASS/FAIL summary with failure signatures
+  - Clean teardown of both processes on exit
+- Updated `docs/dashboard.md` with Smoke Testing section documenting:
+  - Quick start commands
+  - What each phase checks
+  - How to detect regressions
+  - Expected output format
+  - Failure signature table
+- Updated `docs/troubleshooting.md` with Dashboard Smoke Test Failures section
+
+### Files Changed
+- scripts/smoke-test-ui.sh (new)
+- docs/dashboard.md (added Smoke Testing section)
+- docs/troubleshooting.md (added Dashboard Smoke Test Failures section)
+
+### Current State
+- All 1096 tests pass
+- Zero clippy warnings, formatting clean
+
+### Suggested Next Tasks
+- Run the smoke test against cantrip to validate it works end-to-end
+- Consider adding the smoke test to CI once infrastructure supports it
