@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "blacksmith-ui"]
+
 [package]
 name = "blacksmith"
 version = "0.1.0"

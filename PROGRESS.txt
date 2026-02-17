@@ -1,23 +1,26 @@
-## Session: Implement UDP multicast heartbeat (simple-agent-harness-i7t0)
+## Session: Implement instance discovery and registry (simple-agent-harness-k5z6)
 
 ### Completed
-- Bead simple-agent-harness-i7t0: Implement UDP multicast heartbeat
-- Added socket2 v0.5 as optional dep behind `serve` Cargo feature flag
-- Extended ServeConfig with heartbeat (bool), heartbeat_address (String), api_advertise (Option<String>)
-- Implemented heartbeat_loop in serve.rs: spawns a tokio background task that sends JSON UDP multicast every 30s
-- Heartbeat payload includes: v (version), project (from cwd), api (bound addr), status, workers_active, workers_max, iteration, max_iterations, pid
-- api_advertise config allows NAT override of the advertised API URL
-- heartbeat=false in config suppresses heartbeat entirely
-- Multiple instances can coexist on same machine (SO_REUSEADDR + non-blocking socket)
-- Also fixed 2 pre-existing test failures in config::tests (quality gates defaults expected "cargo check" but actual default was "cargo check --release")
-- All 1080 tests pass, zero clippy warnings, fmt clean
+- Bead simple-agent-harness-k5z6: Implement instance discovery and registry
+- Converted project to Cargo workspace with members = [".", "blacksmith-ui"]
+- Created blacksmith-ui crate with dependencies: axum, tower-http, reqwest, socket2, serde, tokio, toml, tracing
+- Implemented config.rs: UiConfig with DashboardConfig (port/bind/poll_interval) and [[projects]] array, plus runtime instance persistence to .blacksmith-ui-instances.json
+- Implemented discovery.rs: InstanceRegistry with three-layer discovery:
+  1. UDP multicast listener on 239.66.83.77:8421 that receives heartbeat packets
+  2. Manual [[projects]] entries from blacksmith-ui.toml
+  3. Runtime POST /api/instances endpoint that probes /api/health before adding
+- Deduplication by normalized URL (lowercase, trailing slash stripped)
+- Sweep task marks instances offline after 90s without heartbeat
+- Runtime-added instances persisted to JSON file for restart survival
+- Routes: GET /api/health, GET /api/instances, POST /api/instances
+- All 1080 existing tests pass, zero clippy warnings, fmt clean
 
 ### Current State
 - Codebase is clean: tests pass, clippy clean, fmt clean
-- Heartbeat feature is fully gated behind `--features serve`
-- k5z6 (instance discovery) is now unblocked by this work
+- blacksmith-ui is a separate workspace member with its own binary
+- Discovery system supports all three sources with merge/dedup
 
 ### Suggested Next Tasks
-- simple-agent-harness-k5z6: Implement instance discovery and registry (P1, now unblocked)
+- simple-agent-harness-rxsx: Implement polling and cross-project aggregation (P1, now unblocked)
 - simple-agent-harness-fsnv: Implement serve port auto-allocation (P2, ready)
 - simple-agent-harness-xi2k: Add estimate API endpoint (P2, ready)
