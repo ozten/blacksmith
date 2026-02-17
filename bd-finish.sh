@@ -39,7 +39,7 @@ echo -e "${GREEN}=== bd-finish: closing ${BEAD_ID} ===${NC}"
 
 # 0a. Cargo check gate — abort if code doesn't compile
 echo -e "${YELLOW}[0a/8] Running cargo check...${NC}"
-if ! cargo check 2>&1; then
+if ! cargo check --release 2>&1; then
   echo ""
   echo -e "${RED}=== CARGO CHECK FAILED ===${NC}"
   echo -e "${RED}Bead ${BEAD_ID} will NOT be closed. Fix compilation errors first.${NC}"
@@ -49,7 +49,7 @@ echo -e "${GREEN}[0a/8] cargo check passed${NC}"
 
 # 0b. Cargo test gate — abort if tests fail
 echo -e "${YELLOW}[0b/8] Running cargo test...${NC}"
-if ! cargo test 2>&1; then
+if ! cargo test --release 2>&1; then
   echo ""
   echo -e "${RED}=== CARGO TEST FAILED ===${NC}"
   echo -e "${RED}Bead ${BEAD_ID} will NOT be closed. Fix failing tests first.${NC}"

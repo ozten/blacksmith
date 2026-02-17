@@ -671,8 +671,8 @@ pub struct QualityGatesConfig {
 impl Default for QualityGatesConfig {
     fn default() -> Self {
         Self {
-            check: vec!["cargo check".to_string()],
-            test: vec!["cargo test".to_string()],
+            check: vec!["cargo check --release".to_string()],
+            test: vec!["cargo test --release".to_string()],
             lint: vec!["cargo clippy --fix --allow-dirty".to_string()],
             format: vec!["cargo fmt --check".to_string()],
         }

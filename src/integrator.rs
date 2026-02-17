@@ -733,7 +733,7 @@ impl IntegrationQueue {
         let cargo_toml = worktree_path.join("Cargo.toml");
         if cargo_toml.exists() {
             let output = Command::new("cargo")
-                .args(["check", "--message-format=short"])
+                .args(["check", "--release", "--message-format=short"])
                 .current_dir(worktree_path)
                 .output()
                 .map_err(|e| format!("failed to run cargo check: {e}"))?;
