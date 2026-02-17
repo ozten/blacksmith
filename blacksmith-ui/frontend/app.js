@@ -672,6 +672,120 @@ function TranscriptViewer({ instanceUrl, sessionId, sessionStatus, onClose }) {
   `;
 }
 
+function EstimatePanel({ instanceUrl }) {
+  const [estimate, setEstimate] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [workerCount, setWorkerCount] = useState(null);
+
+  const fetchEstimate = useCallback(async (workers) => {
+    try {
+      const qs = workers != null ? `?workers=${workers}` : "";
+      const resp = await fetch(`/api/instances/${encodeURIComponent(instanceUrl)}/estimate${qs}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setEstimate(data);
+        if (workerCount == null && data.workers != null) {
+          setWorkerCount(data.workers);
+        }
+        setError(null);
+      } else {
+        setError("Failed to load estimate");
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [instanceUrl, workerCount]);
+
+  useEffect(() => {
+    fetchEstimate(null);
+  }, [instanceUrl]);
+
+  const handleSliderChange = useCallback((e) => {
+    const val = parseInt(e.target.value, 10);
+    setWorkerCount(val);
+    fetchEstimate(val);
+  }, [fetchEstimate]);
+
+  const formatDuration = (secs) => {
+    if (secs == null) return "-";
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  };
+
+  if (loading && !estimate) return html`<div class="detail-section"><div class="bead-empty">Loading estimate...</div></div>`;
+  if (error && !estimate) return null;
+
+  const data = estimate || {};
+  const remaining = data.beads_remaining ?? data.remaining_beads ?? 0;
+  const parallelSecs = data.parallel_eta_secs ?? data.parallel_secs ?? 0;
+  const serialSecs = data.serial_eta_secs ?? data.serial_secs ?? 0;
+  const criticalPath = data.critical_path ?? data.critical_path_beads ?? [];
+  const maxWorkers = Math.max(data.max_workers ?? 10, workerCount ?? 1);
+
+  return html`
+    <div class="detail-section estimate-section">
+      <div class="section-header">
+        <h3>ETA</h3>
+      </div>
+      <div class="estimate-cards">
+        <div class="card">
+          <div class="label">Remaining Beads</div>
+          <div class="value">${remaining}</div>
+        </div>
+        <div class="card">
+          <div class="label">Parallel ETA</div>
+          <div class="value">${formatDuration(parallelSecs)}</div>
+        </div>
+        <div class="card">
+          <div class="label">Serial ETA</div>
+          <div class="value">${formatDuration(serialSecs)}</div>
+        </div>
+      </div>
+      <div class="estimate-slider">
+        <div class="slider-label">
+          <span>What-if: How fast with</span>
+          <span class="slider-value">${workerCount ?? "-"}</span>
+          <span>worker${(workerCount ?? 0) !== 1 ? "s" : ""}?</span>
+        </div>
+        <input
+          type="range"
+          min="1"
+          max=${maxWorkers}
+          value=${workerCount ?? 1}
+          onInput=${handleSliderChange}
+          class="worker-slider"
+        />
+        <div class="slider-range">
+          <span>1</span>
+          <span>${maxWorkers}</span>
+        </div>
+      </div>
+      ${criticalPath.length > 0 && html`
+        <div class="critical-path-section">
+          <div class="critical-path-label">Critical Path Beads</div>
+          <div class="critical-path-list">
+            ${criticalPath.map((bead) => {
+              const id = typeof bead === "string" ? bead : bead.id || bead;
+              const title = typeof bead === "object" ? bead.title : null;
+              return html`
+                <div key=${id} class="critical-path-item">
+                  <span class="critical-path-id">${id}</span>
+                  ${title && html`<span class="critical-path-title">${title}</span>`}
+                </div>
+              `;
+            })}
+          </div>
+        </div>
+      `}
+    </div>
+  `;
+}
+
 function ProjectDetail({ instance, instanceUrl }) {
   const [pollData, setPollData] = useState(null);
   const [viewingTranscript, setViewingTranscript] = useState(null);
@@ -702,6 +816,7 @@ function ProjectDetail({ instance, instanceUrl }) {
     <div class="project-detail">
       <h2>${name}</h2>
       <${StatusBar} instance=${instance} statusData=${pollData?.status_data} />
+      <${EstimatePanel} instanceUrl=${instanceUrl} />
       <${BeadList} beadsData=${pollData?.beads_data} />
       <${ActiveSessions} statusData=${pollData?.status_data} onViewTranscript=${handleViewTranscript} />
       <${MetricsSummary} metricsData=${pollData?.metrics_data} />

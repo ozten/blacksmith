@@ -84,6 +84,7 @@ async fn main() {
             "/api/instances/:url/sessions/:session_id/transcript",
             get(proxy_session_transcript),
         )
+        .route("/api/instances/:url/estimate", get(proxy_estimate))
         .fallback(get(static_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -299,6 +300,59 @@ async fn proxy_session_transcript(
         (
             StatusCode::BAD_GATEWAY,
             Json(serde_json::json!({"error": format!("invalid transcript json: {e}")})),
+        )
+    })?;
+
+    Ok(Json(data))
+}
+
+async fn proxy_estimate(
+    State(state): State<AppState>,
+    axum::extract::Path(url): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let instance_url = resolve_instance_url(&state.registry, &url)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Instance not found"})),
+            )
+        })?;
+
+    let mut estimate_url = format!("{instance_url}/api/estimate");
+    if let Some(workers) = params.get("workers") {
+        estimate_url = format!("{estimate_url}?workers={workers}");
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("http client error: {e}")})),
+            )
+        })?;
+
+    let resp = client.get(&estimate_url).send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("estimate request failed: {e}")})),
+        )
+    })?;
+
+    if !resp.status().is_success() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("estimate returned {}", resp.status())})),
+        ));
+    }
+
+    let data: serde_json::Value = resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": format!("invalid estimate json: {e}")})),
         )
     })?;
 

@@ -2981,3 +2981,31 @@ Implemented three features for the self-improvement feedback loop:
 ### Suggested Next Tasks
 - simple-agent-harness-z38u: Implement dependency DAG visualization (P2, ready)
 - simple-agent-harness-xc3g: Implement rate limit heatmap (P3, ready)
+
+--- 2026-02-17 01:08:44 | simple-agent-harness-peh7 ---
+## Session: Implement ETA display with what-if worker slider (simple-agent-harness-peh7)
+
+### Completed
+- Bead simple-agent-harness-peh7: Implement ETA display with what-if worker slider
+- Added EstimatePanel component in blacksmith-ui/frontend/app.js:
+  - Fetches estimate data from /api/instances/:url/estimate proxy endpoint
+  - Displays remaining beads, parallel ETA, serial ETA as prominent cards
+  - Worker count slider (1 to max_workers) re-queries estimate endpoint with different worker counts
+  - Critical path beads listed with bead ID and title, styled with accent border
+  - Degrades gracefully if DAG visualization is not present (no dependency on DAG component)
+  - Placed prominently right after the StatusBar in ProjectDetail view
+- Added proxy_estimate handler in blacksmith-ui/src/main.rs:
+  - GET /api/instances/:url/estimate - proxies to instance's /api/estimate with optional ?workers= query param
+  - Standard error handling consistent with other proxy endpoints
+- Added CSS styles in blacksmith-ui/frontend/style.css:
+  - estimate-cards grid, slider styling (webkit + moz), critical path list
+  - Dark theme consistent with existing dashboard styles
+- All 1080 tests pass, zero clippy warnings, fmt clean
+
+### Current State
+- Codebase is clean: tests pass, clippy clean, fmt clean
+- ETA panel displays in project detail view after status bar
+- Worker slider updates estimate in real-time
+
+### Suggested Next Tasks
+- simple-agent-harness-xc3g: Implement rate limit heatmap (P3, ready)
