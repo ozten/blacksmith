@@ -1,0 +1,4 @@
+blacksmith init should
+- copy claude skills into the project
+- Using LLM like claude code, investigate what type of project it is and to update the verification section with commands relevant to the current codebase such as a how to run unit tests, linters, etc.
+- Log a message to the user to please READ and CUSTOMIZE PROMPT.md and focus their attention on the verification section "I detected npm run test, but please add any more verification and quality guards
