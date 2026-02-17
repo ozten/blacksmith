@@ -1,23 +1,21 @@
-## Session: Implement GET /api/improvements endpoint (simple-agent-harness-66vi)
+## Session: Implement GET /api/beads endpoint (simple-agent-harness-zcli)
 
 ### Completed
-- Added GET /api/improvements endpoint to serve API
-- Modified serve::run to accept &HarnessConfig (was &ServeConfig) to access storage.data_dir for DB path
-- Added AppState struct with db_path for axum State extractor
-- Added api_improvements handler: opens DB, queries all improvements via db::list_improvements, returns JSON array
-- Added serde::Serialize derive to db::Improvement struct for JSON serialization
-- Updated main.rs serve command to pass full config instead of config.serve
+- Added GET /api/beads endpoint to serve API
+- Reads .beads/issues.jsonl from project root directory
+- Returns JSON with open_count, in_progress_count, and items array
+- Each item includes: id, title, status, type, priority, assignee, description
+- Supports ?status= query parameter to filter beads by status
+- Added beads_dir to AppState for accessing .beads directory
 - All 1080 tests pass, zero clippy warnings, fmt clean
 
 ### Files Changed
-- src/serve.rs: Added AppState, api_improvements handler, changed run() signature
-- src/db.rs: Added serde::Serialize derive to Improvement struct
-- src/main.rs: Updated serve::run call to pass full config
+- src/serve.rs: Added BeadsQuery, BeadItem, BeadsResponse structs; api_beads handler; beads_dir to AppState; /api/beads route
 
 ### Current State
 - Codebase is clean: tests pass, clippy clean, fmt clean
-- GET /api/improvements returns JSON array with all improvement records
+- GET /api/beads returns JSON with bead listing and counts
+- Counts reflect all beads regardless of filter; items respect ?status= filter
 
 ### Suggested Next Tasks
-- Other serve API endpoints (simple-agent-harness-3hps, k57l, oadl, zcli, sqpv, zj32, lu1i)
-- These sibling beads will benefit from the AppState already set up here
+- Other serve API endpoints (simple-agent-harness-3hps, k57l, oadl, sqpv, ts82)

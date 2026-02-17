@@ -5,6 +5,7 @@ use crate::data_dir::DataDir;
 #[derive(Clone)]
 struct AppState {
     db_path: std::path::PathBuf,
+    beads_dir: std::path::PathBuf,
 }
 
 #[cfg(feature = "serve")]
@@ -13,11 +14,16 @@ pub async fn run(config: &HarnessConfig) -> Result<(), Box<dyn std::error::Error
     use tower_http::cors::CorsLayer;
 
     let dd = DataDir::new(&config.storage.data_dir);
-    let state = AppState { db_path: dd.db() };
+    let beads_dir = std::path::PathBuf::from(".beads");
+    let state = AppState {
+        db_path: dd.db(),
+        beads_dir,
+    };
 
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/improvements", get(api_improvements))
+        .route("/api/beads", get(api_beads))
         .with_state(state)
         .layer(CorsLayer::permissive());
 
@@ -50,6 +56,86 @@ async fn api_improvements(
     let improvements = crate::db::list_improvements(&conn, None, None)
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(axum::Json(improvements))
+}
+
+#[cfg(feature = "serve")]
+#[derive(serde::Deserialize)]
+struct BeadsQuery {
+    status: Option<String>,
+}
+
+#[cfg(feature = "serve")]
+#[derive(serde::Serialize)]
+struct BeadItem {
+    id: String,
+    title: String,
+    status: String,
+    #[serde(rename = "type")]
+    issue_type: String,
+    priority: u8,
+    assignee: Option<String>,
+    description: String,
+}
+
+#[cfg(feature = "serve")]
+#[derive(serde::Serialize)]
+struct BeadsResponse {
+    open_count: usize,
+    in_progress_count: usize,
+    items: Vec<BeadItem>,
+}
+
+#[cfg(feature = "serve")]
+async fn api_beads(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<BeadsQuery>,
+) -> Result<axum::Json<BeadsResponse>, axum::http::StatusCode> {
+    let issues_path = state.beads_dir.join("issues.jsonl");
+    let content = std::fs::read_to_string(&issues_path)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut all_items: Vec<BeadItem> = Vec::new();
+    let mut open_count: usize = 0;
+    let mut in_progress_count: usize = 0;
+
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = serde_json::from_str(line)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let status = v["status"].as_str().unwrap_or("unknown").to_string();
+
+        if status == "open" {
+            open_count += 1;
+        } else if status == "in_progress" {
+            in_progress_count += 1;
+        }
+
+        // Apply status filter if provided
+        if let Some(ref filter) = query.status {
+            if &status != filter {
+                continue;
+            }
+        }
+
+        all_items.push(BeadItem {
+            id: v["id"].as_str().unwrap_or("").to_string(),
+            title: v["title"].as_str().unwrap_or("").to_string(),
+            status,
+            issue_type: v["issue_type"].as_str().unwrap_or("").to_string(),
+            priority: v["priority"].as_u64().unwrap_or(4) as u8,
+            assignee: v["owner"].as_str().map(|s| s.to_string()),
+            description: v["description"].as_str().unwrap_or("").to_string(),
+        });
+    }
+
+    Ok(axum::Json(BeadsResponse {
+        open_count,
+        in_progress_count,
+        items: all_items,
+    }))
 }
 
 #[cfg(feature = "serve")]
