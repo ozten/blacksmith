@@ -44,6 +44,8 @@ pub async fn run(config: &HarnessConfig) -> Result<(), Box<dyn std::error::Error
         .route("/api/metrics/summary", get(api_metrics_summary))
         .route("/api/improvements", get(api_improvements))
         .route("/api/beads", get(api_beads))
+        .route("/api/sessions", get(api_sessions))
+        .route("/api/sessions/{id}", get(api_session_detail))
         .route("/api/stop", post(api_stop))
         .route("/api/estimate", get(api_estimate))
         .with_state(state)
@@ -193,6 +195,79 @@ async fn api_metrics_summary(
             "timed_out": outcomes_timed_out,
         },
     })))
+}
+
+#[cfg(feature = "serve")]
+#[derive(serde::Deserialize)]
+struct SessionsQuery {
+    last: Option<i64>,
+}
+
+#[cfg(feature = "serve")]
+#[derive(serde::Serialize)]
+struct SessionItem {
+    id: i64,
+    ts: String,
+    duration_secs: Option<i64>,
+    outcome: Option<String>,
+    #[serde(flatten)]
+    data: serde_json::Value,
+}
+
+#[cfg(feature = "serve")]
+fn observation_to_session_item(obs: &crate::db::Observation) -> SessionItem {
+    let data: serde_json::Value = serde_json::from_str(&obs.data).unwrap_or_default();
+    SessionItem {
+        id: obs.session,
+        ts: obs.ts.clone(),
+        duration_secs: obs.duration,
+        outcome: obs.outcome.clone(),
+        data,
+    }
+}
+
+#[cfg(feature = "serve")]
+async fn api_sessions(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<SessionsQuery>,
+) -> Result<axum::Json<Vec<SessionItem>>, axum::http::StatusCode> {
+    let conn = crate::db::open_or_create(&state.db_path)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let limit = query.last.unwrap_or(50);
+    let observations = crate::db::recent_observations(&conn, limit)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let items: Vec<SessionItem> = observations
+        .iter()
+        .map(observation_to_session_item)
+        .collect();
+    Ok(axum::Json(items))
+}
+
+#[cfg(feature = "serve")]
+async fn api_session_detail(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<SessionItem>, (axum::http::StatusCode, axum::Json<serde_json::Value>)> {
+    let conn = crate::db::open_or_create(&state.db_path).map_err(|_| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": "database error"})),
+        )
+    })?;
+
+    match crate::db::get_observation(&conn, id) {
+        Ok(Some(obs)) => Ok(axum::Json(observation_to_session_item(&obs))),
+        Ok(None) => Err((
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "session not found", "id": id})),
+        )),
+        Err(_) => Err((
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({"error": "database error"})),
+        )),
+    }
 }
 
 #[cfg(feature = "serve")]
@@ -505,6 +580,8 @@ mod tests {
             .route("/api/status", get(api_status))
             .route("/api/project", get(api_project))
             .route("/api/metrics/summary", get(api_metrics_summary))
+            .route("/api/sessions", get(api_sessions))
+            .route("/api/sessions/{id}", get(api_session_detail))
             .with_state(state)
     }
 
@@ -616,5 +693,172 @@ mod tests {
         assert!(json["session_outcomes"]["success"].is_number());
         assert!(json["session_outcomes"]["failed"].is_number());
         assert!(json["session_outcomes"]["timed_out"].is_number());
+    }
+
+    #[tokio::test]
+    async fn test_api_sessions_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let app = test_app(state);
+
+        let resp = app
+            .oneshot(Request::get("/api/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_api_sessions_with_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        // Insert some observations
+        let conn = crate::db::open_or_create(&state.db_path).unwrap();
+        crate::db::upsert_observation(
+            &conn,
+            0,
+            "2026-02-17T10:00:00Z",
+            Some(120),
+            Some("success"),
+            r#"{"cost.estimate_usd":0.5}"#,
+        )
+        .unwrap();
+        crate::db::upsert_observation(
+            &conn,
+            1,
+            "2026-02-17T11:00:00Z",
+            Some(90),
+            Some("failed"),
+            r#"{"cost.estimate_usd":0.3}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let app = test_app(state);
+        let resp = app
+            .oneshot(Request::get("/api/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        // recent_observations returns descending order
+        assert_eq!(arr[0]["id"], 1);
+        assert_eq!(arr[0]["outcome"], "failed");
+        assert_eq!(arr[0]["duration_secs"], 90);
+        assert_eq!(arr[1]["id"], 0);
+        assert_eq!(arr[1]["outcome"], "success");
+    }
+
+    #[tokio::test]
+    async fn test_api_sessions_last_param() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let conn = crate::db::open_or_create(&state.db_path).unwrap();
+        for i in 0..5 {
+            crate::db::upsert_observation(
+                &conn,
+                i,
+                &format!("2026-02-17T1{}:00:00Z", i),
+                Some(60),
+                Some("success"),
+                "{}",
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let app = test_app(state);
+        let resp = app
+            .oneshot(
+                Request::get("/api/sessions?last=2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_api_session_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        let conn = crate::db::open_or_create(&state.db_path).unwrap();
+        crate::db::upsert_observation(
+            &conn,
+            42,
+            "2026-02-17T12:00:00Z",
+            Some(300),
+            Some("success"),
+            r#"{"cost.estimate_usd":1.2,"bead_id":"bd-5"}"#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let app = test_app(state);
+        let resp = app
+            .oneshot(
+                Request::get("/api/sessions/42")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["id"], 42);
+        assert_eq!(json["outcome"], "success");
+        assert_eq!(json["duration_secs"], 300);
+        assert_eq!(json["cost.estimate_usd"], 1.2);
+        assert_eq!(json["bead_id"], "bd-5");
+    }
+
+    #[tokio::test]
+    async fn test_api_session_detail_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let app = test_app(state);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/sessions/999")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "session not found");
+        assert_eq!(json["id"], 999);
     }
 }

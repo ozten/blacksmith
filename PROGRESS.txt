@@ -1,22 +1,19 @@
-## Session: Restore core poll endpoints (simple-agent-harness-946)
+## Session: Restore session list/detail endpoints (simple-agent-harness-947)
 
 ### Completed
-- Added GET /api/status endpoint: reads StatusData from status file, returns JSON (or {"state":"idle"} if no file)
-- Added GET /api/project endpoint: returns project name, workers_max, max_iterations
-- Added GET /api/metrics/summary endpoint: aggregates cost_today, cost_this_week from observations, workers from status file, beads_closed_today from bead_metrics, session_outcomes from observations
-- Extended AppState with status_path, project_name, workers_max, max_iterations fields
-- Added 4 route coverage tests (status no-file, status with-file, project, metrics/summary)
-- Added tower dev-dependency for axum test utilities
+- Added GET /api/sessions endpoint with ?last=N query param (defaults to 50)
+- Added GET /api/sessions/{id} endpoint with 404 JSON error for missing sessions
+- Session data sourced from observations table (session id, ts, duration, outcome, plus flattened data fields)
+- Added 5 tests: empty list, list with data, ?last=N filtering, detail, and 404 behavior
 
 ### Files Changed
-- src/serve.rs: Three new handler functions + routes + test module
-- Cargo.toml: Added tower dev-dependency
+- src/serve.rs: Two new handler functions (api_sessions, api_session_detail), SessionsQuery/SessionItem structs, routes, tests
 
 ### Current State
-- All 1084+ tests pass (1 pre-existing flaky watchdog test: test_monitor_kills_stale_process)
+- All 1089 tests pass
 - Zero clippy warnings, formatting clean
-- Pre-existing fmt issue in blacksmith-ui/src/main.rs (not touched)
+- Pre-existing flaky watchdog test (test_monitor_kills_stale_process) passed this run
 
 ### Suggested Next Tasks
-- simple-agent-harness-947: Restore session list/detail endpoints
 - simple-agent-harness-948: Restore transcript endpoints for UI viewer
+- simple-agent-harness-950: blacksmith init should create .blacksmith/config.yaml by default
