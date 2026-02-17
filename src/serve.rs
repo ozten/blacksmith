@@ -41,7 +41,13 @@ pub async fn run(config: &HarnessConfig) -> Result<(), Box<dyn std::error::Error
 
     if serve_config.heartbeat {
         let heartbeat_config = HeartbeatConfig::from_serve_config(serve_config, local_addr);
-        tokio::spawn(heartbeat_loop(heartbeat_config));
+        let dd = DataDir::new(&config.storage.data_dir);
+        let heartbeat_ctx = HeartbeatContext {
+            status_path: dd.status(),
+            workers_max: config.workers.max,
+            max_iterations: config.session.max_iterations,
+        };
+        tokio::spawn(heartbeat_loop(heartbeat_config, heartbeat_ctx));
     }
 
     axum::serve(listener, app).await?;
@@ -191,7 +197,15 @@ impl HeartbeatConfig {
 }
 
 #[cfg(feature = "serve")]
-async fn heartbeat_loop(config: HeartbeatConfig) {
+struct HeartbeatContext {
+    status_path: std::path::PathBuf,
+    workers_max: u32,
+    max_iterations: u32,
+}
+
+#[cfg(feature = "serve")]
+async fn heartbeat_loop(config: HeartbeatConfig, ctx: HeartbeatContext) {
+    use crate::status::StatusFile;
     use socket2::SockAddr;
 
     let socket = match create_multicast_socket(&config.multicast_addr) {
@@ -205,6 +219,7 @@ async fn heartbeat_loop(config: HeartbeatConfig) {
     let dest = SockAddr::from(config.multicast_addr);
     let pid = std::process::id();
     let version = env!("CARGO_PKG_VERSION");
+    let status_file = StatusFile::new(ctx.status_path);
 
     tracing::info!(
         "heartbeat: broadcasting to {} every 30s",
@@ -212,15 +227,21 @@ async fn heartbeat_loop(config: HeartbeatConfig) {
     );
 
     loop {
+        // Read live state from the status file written by the coordinator/runner
+        let (state, iteration) = match status_file.read() {
+            Ok(Some(data)) => (format!("{:?}", data.state).to_lowercase(), data.global_iteration),
+            _ => ("idle".to_string(), 0),
+        };
+
         let payload = serde_json::json!({
             "v": version,
             "project": config.project,
             "api": config.api_url,
-            "status": "serving",
-            "workers_active": 0,
-            "workers_max": 0,
-            "iteration": 0,
-            "max_iterations": 0,
+            "status": state,
+            "workers_active": ctx.workers_max,
+            "workers_max": ctx.workers_max,
+            "iteration": iteration,
+            "max_iterations": ctx.max_iterations,
             "pid": pid,
         });
 
