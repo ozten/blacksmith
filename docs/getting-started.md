@@ -97,13 +97,23 @@ See [Multi-Agent Coordination](multi-agent.md).
 Blacksmith works with any AI coding agent. Configure the command and adapter:
 
 ```toml
+# Codex (OpenAI)
 [agent]
 command = "codex"
-args = ["--prompt", "{prompt}"]
-adapter = "codex"
+args = ["exec", "--json", "--full-auto", "{prompt}"]
+
+# Aider
+[agent]
+command = "aider"
+args = ["--message", "{prompt}", "--yes-always"]
+
+# OpenCode
+[agent]
+command = "opencode"
+args = ["run", "{prompt}"]
 ```
 
-See [Agent Adapters](adapters.md) for supported agents.
+The adapter is auto-detected from the command name. See [Agent Adapters](adapters.md) for full flag reference and metrics support.
 
 ## Project Structure
 

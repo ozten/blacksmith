@@ -1,5 +1,8 @@
 # Blacksmith
 
+> [!NOTE]
+> Blacksmith is under active development and the API surface is not yet stable. We're iterating quickly — expect breaking changes in early releases. That said, it's fully functional today and we'd love for you to try it out.
+
 A supervised agent harness that runs AI coding agents in a loop — dispatching prompts, monitoring sessions, enforcing health invariants, collecting metrics, and repeating.
 
 ## Install

@@ -32,7 +32,23 @@ adapter = "claude"    # Force Claude adapter
 
 ## Claude Adapter
 
-The default adapter. Parses Claude's stream-json JSONL format.
+The default adapter. Parses Claude Code's `stream-json` JSONL format.
+
+**Config:**
+
+```toml
+[agent]
+command = "claude"
+args = ["-p", "{prompt}", "--verbose", "--output-format", "stream-json"]
+```
+
+Key flags:
+- `-p {prompt}` — Non-interactive ("print") mode; reads the prompt as an argument and exits when done.
+- `--output-format stream-json` — Emits JSONL events to stdout (required for metric extraction).
+- `--verbose` — Includes tool-use detail in the JSONL stream.
+- `--allowedTools "Bash Read Write Edit Glob Grep"` — Optional whitelist of tools the agent may use (replaces `--dangerously-skip-permissions`).
+- `--model <model-id>` — Override the default model (e.g. `claude-sonnet-4-5-20250929`).
+- `--max-turns <N>` — Cap the number of agentic turns.
 
 **Built-in metrics:**
 - `turns.total` — Total conversation turns
@@ -49,33 +65,118 @@ The default adapter. Parses Claude's stream-json JSONL format.
 
 ## Codex Adapter
 
-Parses Codex CLI output format.
+Parses OpenAI Codex CLI `--json` JSONL output.
+
+**Config:**
+
+```toml
+[agent]
+command = "codex"
+args = ["exec", "--json", "--full-auto", "{prompt}"]
+```
+
+Key flags:
+- `exec` — Non-interactive subcommand (alias: `e`). Required for headless / CI use.
+- `--json` — Emits JSONL events to stdout (required for metric extraction). Event types: `thread.started`, `turn.started`, `turn.completed`, `item.started`, `item.completed`, `error`.
+- `--full-auto` — Allows the agent to make edits automatically (sets `--ask-for-approval on-request` and workspace-write sandbox).
+- `--ephemeral` — Skip persisting Codex session files to disk.
+- `-m <model>` / `--model <model>` — Override the configured model.
+- `-s <policy>` / `--sandbox <policy>` — Sandbox policy: `read-only` (default), `workspace-write`, or `danger-full-access`.
+- `--dangerously-bypass-approvals-and-sandbox` / `--yolo` — Skip all safeguards (use only in isolated environments).
+- `--skip-git-repo-check` — Allow execution outside a Git repository.
+- `-o <path>` / `--output-last-message <path>` — Write the final agent message to a file.
+
+Environment:
+- `CODEX_API_KEY` — API key for CI (only supported in `codex exec`).
+
+Prompt delivery uses `prompt_via = "arg"` by default — the `{prompt}` placeholder is replaced inline in the args.
 
 **Built-in metrics:**
 - `turns.total`
 - `turns.tool_calls`
-- Session metadata (duration, output bytes)
+- `session.output_bytes`, `session.exit_code`, `session.duration_secs`
 
 **Not available:** Cost metrics, `turns.narration_only`, `turns.parallel`
 
+**Example — full-auto with custom model:**
+
+```toml
+[agent]
+command = "codex"
+args = ["exec", "--json", "--full-auto", "-m", "o3", "{prompt}"]
+adapter = "codex"
+```
+
 ## OpenCode Adapter
 
-Parses OpenCode output format.
+Parses OpenCode JSONL or single-JSON session output.
+
+**Config:**
+
+```toml
+[agent]
+command = "opencode"
+args = ["run", "{prompt}"]
+prompt_via = "arg"
+```
+
+Key flags:
+- `run "<prompt>"` — Non-interactive mode; executes the prompt and exits.
+- `-q` / `--quiet` — Disables the spinner (useful in automation).
+- `--log-level <LEVEL>` — Set log verbosity: `DEBUG`, `INFO`, `WARN`, `ERROR`.
+
+OpenCode can also run in server mode (`opencode serve`) with `--attach` for reuse across invocations, but the `run` subcommand is what blacksmith invokes.
+
+> **Note:** OpenCode does not currently have a `--json` flag for structured JSONL output. The adapter parses whatever format the session file contains (JSONL lines or a single JSON object with a `messages` array). Token metrics are extracted when the output includes `usage`, `prompt_tokens`, or `completion_tokens` fields; otherwise they are silently skipped.
 
 **Built-in metrics:**
 - `turns.total`
 - `turns.tool_calls`
-- Token counts (if available in output)
-- Session metadata
+- `cost.input_tokens`, `cost.output_tokens` (when available in output)
+- `session.output_bytes`, `session.exit_code`, `session.duration_secs`
 
 ## Aider Adapter
 
-Parses Aider chat log format.
+Parses Aider's plain-text chat log format.
+
+**Config:**
+
+```toml
+[agent]
+command = "aider"
+args = ["--message", "{prompt}", "--yes-always"]
+```
+
+Key flags:
+- `--message` / `-m` — Non-interactive mode; sends one message and exits.
+- `--message-file` / `-f` — Read the prompt from a file instead of an argument.
+- `--yes-always` — Automatically confirm all prompts (required for unattended use).
+- `--yes` — Lighter variant; confirms most prompts.
+- `--auto-commits` / `--no-auto-commits` — Control whether aider auto-commits changes (default: on).
+- `--model <model>` — Override the model.
+- `--no-stream` — Disable streaming (can simplify log parsing).
+
+Environment:
+- `AIDER_YES=true` — Equivalent to `--yes`.
+- `AIDER_MESSAGE=...` — Equivalent to `--message`.
+
+Prompt delivery: use `prompt_via = "arg"` (default) with the `{prompt}` placeholder inside `--message`, or use `prompt_via = "file"` with `--message-file {prompt_file}` for very long prompts.
 
 **Built-in metrics:**
 - `turns.total`
-- `cost.estimate_usd`
-- Session metadata
+- `cost.estimate_usd` (extracted from Aider's "Cost: $X.XX session" lines)
+- `session.output_bytes`
+
+**Not available:** Token counts, `turns.tool_calls`, `turns.narration_only`, `turns.parallel`
+
+**Example — aider with prompt file and no auto-commits:**
+
+```toml
+[agent]
+command = "aider"
+args = ["--message-file", "{prompt_file}", "--yes-always", "--no-auto-commits"]
+prompt_via = "file"
+```
 
 ## Raw Adapter
 
