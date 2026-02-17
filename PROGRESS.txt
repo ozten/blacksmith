@@ -1,17 +1,22 @@
-## Session: Adaptive heartbeat timing (simple-agent-harness-7qtr)
+## Session: Restore core poll endpoints (simple-agent-harness-946)
 
 ### Completed
-- Changed heartbeat from fixed 30s interval to adaptive: 2s burst for first 30s, then 10s settled
-- New instances now discoverable in ~2-4s instead of ~50s
-- Updated log message to reflect new behavior
+- Added GET /api/status endpoint: reads StatusData from status file, returns JSON (or {"state":"idle"} if no file)
+- Added GET /api/project endpoint: returns project name, workers_max, max_iterations
+- Added GET /api/metrics/summary endpoint: aggregates cost_today, cost_this_week from observations, workers from status file, beads_closed_today from bead_metrics, session_outcomes from observations
+- Extended AppState with status_path, project_name, workers_max, max_iterations fields
+- Added 4 route coverage tests (status no-file, status with-file, project, metrics/summary)
+- Added tower dev-dependency for axum test utilities
 
 ### Files Changed
-- src/serve.rs: heartbeat_loop now uses BURST_INTERVAL (2s), SETTLED_INTERVAL (10s), BURST_DURATION (30s) constants with tokio::time::Instant to determine interval
+- src/serve.rs: Three new handler functions + routes + test module
+- Cargo.toml: Added tower dev-dependency
 
 ### Current State
-- All 1080 tests pass, zero clippy warnings, formatting clean
-- Simple, contained change in heartbeat_loop function
+- All 1084+ tests pass (1 pre-existing flaky watchdog test: test_monitor_kills_stale_process)
+- Zero clippy warnings, formatting clean
+- Pre-existing fmt issue in blacksmith-ui/src/main.rs (not touched)
 
 ### Suggested Next Tasks
-- Adaptive backend polling (simple-agent-harness-uurh) - complementary feature for UI side
-- Frontend poll interval/SSE push (simple-agent-harness-v2j0)
+- simple-agent-harness-947: Restore session list/detail endpoints
+- simple-agent-harness-948: Restore transcript endpoints for UI viewer

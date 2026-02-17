@@ -7,6 +7,10 @@ struct AppState {
     db_path: std::path::PathBuf,
     beads_dir: std::path::PathBuf,
     stop_file: std::path::PathBuf,
+    status_path: std::path::PathBuf,
+    project_name: String,
+    workers_max: u32,
+    max_iterations: u32,
 }
 
 #[cfg(feature = "serve")]
@@ -19,14 +23,25 @@ pub async fn run(config: &HarnessConfig) -> Result<(), Box<dyn std::error::Error
 
     let dd = DataDir::new(&config.storage.data_dir);
     let beads_dir = std::path::PathBuf::from(".beads");
+    let project_name = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "unknown".to_string());
     let state = AppState {
         db_path: dd.db(),
         beads_dir,
         stop_file: config.shutdown.stop_file.clone(),
+        status_path: dd.status(),
+        project_name,
+        workers_max: config.workers.max,
+        max_iterations: config.session.max_iterations,
     };
 
     let app = Router::new()
         .route("/api/health", get(health))
+        .route("/api/status", get(api_status))
+        .route("/api/project", get(api_project))
+        .route("/api/metrics/summary", get(api_metrics_summary))
         .route("/api/improvements", get(api_improvements))
         .route("/api/beads", get(api_beads))
         .route("/api/stop", post(api_stop))
@@ -58,6 +73,126 @@ pub async fn run(config: &HarnessConfig) -> Result<(), Box<dyn std::error::Error
 #[cfg(feature = "serve")]
 async fn health() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({"ok": true}))
+}
+
+#[cfg(feature = "serve")]
+async fn api_status(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    use crate::status::StatusFile;
+
+    let sf = StatusFile::new(state.status_path.clone());
+    match sf.read() {
+        Ok(Some(data)) => {
+            // Serialize the StatusData directly — it derives Serialize
+            match serde_json::to_value(&data) {
+                Ok(v) => axum::Json(v),
+                Err(_) => axum::Json(serde_json::json!({"state": "unknown"})),
+            }
+        }
+        _ => axum::Json(serde_json::json!({"state": "idle"})),
+    }
+}
+
+#[cfg(feature = "serve")]
+async fn api_project(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "name": state.project_name,
+        "workers_max": state.workers_max,
+        "max_iterations": state.max_iterations,
+    }))
+}
+
+#[cfg(feature = "serve")]
+async fn api_metrics_summary(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let conn = crate::db::open_or_create(&state.db_path)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Sum cost from observations data (cost.estimate_usd field in JSON data)
+    let observations = crate::db::all_observations(&conn)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    use chrono::Datelike;
+
+    let now = chrono::Utc::now();
+    let today_start = now.format("%Y-%m-%d").to_string();
+    let week_start = (now - chrono::Duration::days(now.weekday().num_days_from_monday() as i64))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let mut cost_today = 0.0_f64;
+    let mut cost_this_week = 0.0_f64;
+    let mut beads_closed_today = 0_u64;
+    let mut outcomes_success = 0_u64;
+    let mut outcomes_failed = 0_u64;
+    let mut outcomes_timed_out = 0_u64;
+
+    for obs in &observations {
+        let obs_date = &obs.ts[..10]; // "YYYY-MM-DD"
+        let data: serde_json::Value = serde_json::from_str(&obs.data).unwrap_or_default();
+        let cost = data["cost.estimate_usd"].as_f64().unwrap_or(0.0);
+
+        if obs_date >= week_start.as_str() {
+            cost_this_week += cost;
+        }
+        if obs_date >= today_start.as_str() {
+            cost_today += cost;
+
+            // Count outcomes for today
+            match obs.outcome.as_deref() {
+                Some("success") => outcomes_success += 1,
+                Some("failed") => outcomes_failed += 1,
+                Some("timed_out") => outcomes_timed_out += 1,
+                _ => {}
+            }
+        }
+    }
+
+    // Count beads closed today from bead_metrics
+    let all_bead_metrics = crate::db::all_bead_metrics(&conn)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    for bm in &all_bead_metrics {
+        if let Some(ref completed) = bm.completed_at {
+            if completed.len() >= 10 && &completed[..10] >= today_start.as_str() {
+                beads_closed_today += 1;
+            }
+        }
+    }
+
+    // Read live worker counts from status file
+    let (workers_active, workers_max) = {
+        use crate::status::StatusFile;
+        let sf = StatusFile::new(state.status_path.clone());
+        match sf.read() {
+            Ok(Some(data)) => {
+                let active = match data.state {
+                    crate::status::HarnessState::SessionRunning
+                    | crate::status::HarnessState::PreHooks
+                    | crate::status::HarnessState::PostHooks => state.workers_max,
+                    _ => 0,
+                };
+                (active as u64, state.workers_max as u64)
+            }
+            _ => (0, state.workers_max as u64),
+        }
+    };
+
+    Ok(axum::Json(serde_json::json!({
+        "cost_today": cost_today,
+        "cost_this_week": cost_this_week,
+        "workers_active": workers_active,
+        "workers_max": workers_max,
+        "beads_closed_today": beads_closed_today,
+        "session_outcomes": {
+            "success": outcomes_success,
+            "failed": outcomes_failed,
+            "timed_out": outcomes_timed_out,
+        },
+    })))
 }
 
 #[cfg(feature = "serve")]
@@ -327,4 +462,159 @@ fn create_multicast_socket(
     let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse()?;
     socket.bind(&bind_addr.into())?;
     Ok(socket)
+}
+
+#[cfg(all(test, feature = "serve"))]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+        Router,
+    };
+    use tower::ServiceExt;
+
+    fn test_state(dir: &std::path::Path) -> AppState {
+        let db_path = dir.join("test.db");
+        // Ensure DB exists
+        let _conn = crate::db::open_or_create(&db_path).unwrap();
+
+        let beads_dir = dir.join("beads");
+        std::fs::create_dir_all(&beads_dir).unwrap();
+        // Create a minimal issues.jsonl
+        std::fs::write(
+            beads_dir.join("issues.jsonl"),
+            r#"{"id":"b-1","title":"Test","status":"open","issue_type":"task","priority":2,"owner":null,"description":"desc"}"#,
+        )
+        .unwrap();
+
+        AppState {
+            db_path,
+            beads_dir,
+            stop_file: dir.join("stop"),
+            status_path: dir.join("status"),
+            project_name: "test-project".to_string(),
+            workers_max: 2,
+            max_iterations: 25,
+        }
+    }
+
+    fn test_app(state: AppState) -> Router {
+        Router::new()
+            .route("/api/status", get(api_status))
+            .route("/api/project", get(api_project))
+            .route("/api/metrics/summary", get(api_metrics_summary))
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn test_api_status_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let app = test_app(state);
+
+        let resp = app
+            .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["state"], "idle");
+    }
+
+    #[tokio::test]
+    async fn test_api_status_with_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+
+        // Write a status file
+        let sf = crate::status::StatusFile::new(state.status_path.clone());
+        let data = crate::status::StatusData {
+            pid: std::process::id(),
+            state: crate::status::HarnessState::SessionRunning,
+            iteration: 3,
+            max_iterations: 25,
+            global_iteration: 103,
+            output_file: "test.jsonl".to_string(),
+            output_bytes: 5000,
+            session_start: None,
+            last_update: chrono::Utc::now(),
+            last_completed_iteration: Some(102),
+            last_committed: true,
+            consecutive_rate_limits: 0,
+        };
+        sf.write(&data).unwrap();
+
+        let app = test_app(state);
+        let resp = app
+            .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["state"], "session_running");
+        assert_eq!(json["iteration"], 3);
+        assert_eq!(json["global_iteration"], 103);
+    }
+
+    #[tokio::test]
+    async fn test_api_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let app = test_app(state);
+
+        let resp = app
+            .oneshot(Request::get("/api/project").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "test-project");
+        assert_eq!(json["workers_max"], 2);
+        assert_eq!(json["max_iterations"], 25);
+    }
+
+    #[tokio::test]
+    async fn test_api_metrics_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_state(dir.path());
+        let app = test_app(state);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/metrics/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // Should have all expected fields
+        assert!(json["cost_today"].is_number());
+        assert!(json["cost_this_week"].is_number());
+        assert!(json["workers_active"].is_number());
+        assert!(json["workers_max"].is_number());
+        assert!(json["beads_closed_today"].is_number());
+        assert!(json["session_outcomes"]["success"].is_number());
+        assert!(json["session_outcomes"]["failed"].is_number());
+        assert!(json["session_outcomes"]["timed_out"].is_number());
+    }
 }
