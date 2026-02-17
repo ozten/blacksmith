@@ -235,16 +235,16 @@ async fn heartbeat_loop(config: HeartbeatConfig) {
 
 #[cfg(feature = "serve")]
 fn create_multicast_socket(
-    addr: &std::net::SocketAddr,
+    _addr: &std::net::SocketAddr,
 ) -> Result<socket2::Socket, Box<dyn std::error::Error>> {
     use socket2::{Domain, Protocol, Socket, Type};
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
     socket.set_multicast_ttl_v4(2)?;
+    socket.set_multicast_loop_v4(true)?;
     socket.set_nonblocking(true)?;
-    // Bind to any address on the multicast port so multiple instances can coexist
-    let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{}", addr.port()).parse()?;
+    // Bind to ephemeral port — sender only needs to send, not receive
+    let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse()?;
     socket.bind(&bind_addr.into())?;
     Ok(socket)
 }

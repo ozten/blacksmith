@@ -260,6 +260,8 @@ async fn udp_listener_loop(
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
 
     let bind_addr: std::net::SocketAddr = format!("0.0.0.0:{MULTICAST_PORT}").parse()?;

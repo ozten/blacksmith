@@ -74,17 +74,17 @@ async fn main() {
         .route("/api/instances", post(add_instance))
         .route("/api/aggregate", get(get_aggregate))
         .route("/api/global-metrics", get(get_global_metrics))
-        .route("/api/instances/:url/poll-data", get(get_instance_poll_data))
-        .route("/api/instances/:url/stop", post(stop_instance))
+        .route("/api/instances/{url}/poll-data", get(get_instance_poll_data))
+        .route("/api/instances/{url}/stop", post(stop_instance))
         .route(
-            "/api/instances/:url/sessions/:session_id/stream",
+            "/api/instances/{url}/sessions/{session_id}/stream",
             get(proxy_session_stream),
         )
         .route(
-            "/api/instances/:url/sessions/:session_id/transcript",
+            "/api/instances/{url}/sessions/{session_id}/transcript",
             get(proxy_session_transcript),
         )
-        .route("/api/instances/:url/estimate", get(proxy_estimate))
+        .route("/api/instances/{url}/estimate", get(proxy_estimate))
         .fallback(get(static_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
