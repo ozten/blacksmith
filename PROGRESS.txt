@@ -1,26 +1,23 @@
-## Session: Implement ETA display with what-if worker slider (simple-agent-harness-peh7)
+## Session: Implement GET /api/improvements endpoint (simple-agent-harness-66vi)
 
 ### Completed
-- Bead simple-agent-harness-peh7: Implement ETA display with what-if worker slider
-- Added EstimatePanel component in blacksmith-ui/frontend/app.js:
-  - Fetches estimate data from /api/instances/:url/estimate proxy endpoint
-  - Displays remaining beads, parallel ETA, serial ETA as prominent cards
-  - Worker count slider (1 to max_workers) re-queries estimate endpoint with different worker counts
-  - Critical path beads listed with bead ID and title, styled with accent border
-  - Degrades gracefully if DAG visualization is not present (no dependency on DAG component)
-  - Placed prominently right after the StatusBar in ProjectDetail view
-- Added proxy_estimate handler in blacksmith-ui/src/main.rs:
-  - GET /api/instances/:url/estimate - proxies to instance's /api/estimate with optional ?workers= query param
-  - Standard error handling consistent with other proxy endpoints
-- Added CSS styles in blacksmith-ui/frontend/style.css:
-  - estimate-cards grid, slider styling (webkit + moz), critical path list
-  - Dark theme consistent with existing dashboard styles
+- Added GET /api/improvements endpoint to serve API
+- Modified serve::run to accept &HarnessConfig (was &ServeConfig) to access storage.data_dir for DB path
+- Added AppState struct with db_path for axum State extractor
+- Added api_improvements handler: opens DB, queries all improvements via db::list_improvements, returns JSON array
+- Added serde::Serialize derive to db::Improvement struct for JSON serialization
+- Updated main.rs serve command to pass full config instead of config.serve
 - All 1080 tests pass, zero clippy warnings, fmt clean
+
+### Files Changed
+- src/serve.rs: Added AppState, api_improvements handler, changed run() signature
+- src/db.rs: Added serde::Serialize derive to Improvement struct
+- src/main.rs: Updated serve::run call to pass full config
 
 ### Current State
 - Codebase is clean: tests pass, clippy clean, fmt clean
-- ETA panel displays in project detail view after status bar
-- Worker slider updates estimate in real-time
+- GET /api/improvements returns JSON array with all improvement records
 
 ### Suggested Next Tasks
-- simple-agent-harness-xc3g: Implement rate limit heatmap (P3, ready)
+- Other serve API endpoints (simple-agent-harness-3hps, k57l, oadl, zcli, sqpv, zj32, lu1i)
+- These sibling beads will benefit from the AppState already set up here

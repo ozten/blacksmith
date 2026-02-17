@@ -1114,7 +1114,7 @@ async fn main() {
         if let Some(b) = bind {
             config.serve.bind = b.clone();
         }
-        if let Err(e) = serve::run(&config.serve).await {
+        if let Err(e) = serve::run(&config).await {
             eprintln!("Serve error: {e}");
             std::process::exit(1);
         }

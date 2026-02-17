@@ -1,21 +1,34 @@
-use crate::config::ServeConfig;
+use crate::config::{HarnessConfig, ServeConfig};
+use crate::data_dir::DataDir;
 
 #[cfg(feature = "serve")]
-pub async fn run(config: &ServeConfig) -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Clone)]
+struct AppState {
+    db_path: std::path::PathBuf,
+}
+
+#[cfg(feature = "serve")]
+pub async fn run(config: &HarnessConfig) -> Result<(), Box<dyn std::error::Error>> {
     use axum::{routing::get, Router};
     use tower_http::cors::CorsLayer;
 
+    let dd = DataDir::new(&config.storage.data_dir);
+    let state = AppState { db_path: dd.db() };
+
     let app = Router::new()
         .route("/api/health", get(health))
+        .route("/api/improvements", get(api_improvements))
+        .with_state(state)
         .layer(CorsLayer::permissive());
 
-    let addr = format!("{}:{}", config.bind, config.port);
+    let serve_config = &config.serve;
+    let addr = format!("{}:{}", serve_config.bind, serve_config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let local_addr = listener.local_addr()?;
     tracing::info!("serve listening on {local_addr}");
 
-    if config.heartbeat {
-        let heartbeat_config = HeartbeatConfig::from_serve_config(config, local_addr);
+    if serve_config.heartbeat {
+        let heartbeat_config = HeartbeatConfig::from_serve_config(serve_config, local_addr);
         tokio::spawn(heartbeat_loop(heartbeat_config));
     }
 
@@ -26,6 +39,17 @@ pub async fn run(config: &ServeConfig) -> Result<(), Box<dyn std::error::Error>>
 #[cfg(feature = "serve")]
 async fn health() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({"ok": true}))
+}
+
+#[cfg(feature = "serve")]
+async fn api_improvements(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<axum::Json<Vec<crate::db::Improvement>>, axum::http::StatusCode> {
+    let conn = crate::db::open_or_create(&state.db_path)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let improvements = crate::db::list_improvements(&conn, None, None)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(axum::Json(improvements))
 }
 
 #[cfg(feature = "serve")]

@@ -146,7 +146,7 @@ pub fn insert_improvement(
 }
 
 /// A row from the improvements table.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct Improvement {
     pub ref_id: String,
     pub created: String,
