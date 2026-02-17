@@ -184,6 +184,7 @@ pub fn customize_prompt_with_llm(project_root: &Path) -> Result<bool, std::io::E
     let child = Command::new("claude")
         .arg("-p")
         .arg(LLM_CUSTOMIZATION_PROMPT)
+        .arg("--dangerously-skip-permissions")
         .arg("--verbose")
         .arg("--output-format")
         .arg("text")
