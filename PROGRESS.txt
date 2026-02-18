@@ -1,21 +1,19 @@
-## Session: Auto-close epics when all children are closed (simple-agent-harness-nvzo)
+## Session: Fix worktree config discovery for blacksmith finish (simple-agent-harness-hz9a)
 
 ### Completed
-- Extended post-integration bead-closing flow in `src/integrator.rs` to auto-close parent epics when all of their `parent-child` dependencies are no longer open.
-- Added upward chaining: when an epic auto-closes, the logic re-checks whether that closure now makes its parent epic eligible.
-- Kept failure behavior non-fatal: failures in `bd list`, `bd close`, or `bd sync` during auto-close emit warnings and integration continues.
-- Added unit tests for parsing open-issue dependency data and determining parent-epic close eligibility.
+- Updated `HarnessConfig::load()` in `src/config.rs` to add worktree-safe config lookup.
+- When default `.blacksmith/config.toml` is missing from CWD, config loading now resolves git repo root using `git rev-parse --git-common-dir` (fallback `--show-toplevel`) and retries `<repo>/.blacksmith/config.toml`.
+- Added unit test `test_load_from_worktree_finds_repo_root_config` that creates a temp git repo + worktree and verifies loading from a worktree path resolves parent repo config.
 
 ### Verification Run
-- `cargo test` (pass)
-- `cargo test --release` (pass)
+- `cargo test test_load_from_worktree_finds_repo_root_config` (pass)
+- `cargo test --release` (pass: 1128 passed, 0 failed, 1 ignored)
 - `cargo clippy --fix --allow-dirty` (pass)
-- `cargo fmt --check` initially failed; applied `cargo fmt`
-- `cargo check` (pass)
+- `cargo fmt -- src/config.rs` (applied)
 
 ### Current State
-- Integrated beads are closed in bd as before.
-- After a successful close, parent epics are now evaluated and auto-closed when their children are complete, with recursive upward chaining.
+- Worktree execution of `blacksmith finish` no longer falls directly to compiled defaults when project config exists at repo root.
+- Change scope is limited to `src/config.rs`.
 
 ### Suggested Next Task
-- Add an integration-style test with a mocked/fake `bd` command path to validate end-to-end command sequencing (`close child -> sync -> close parent -> sync`) across multiple hierarchy levels.
+- Add a small integration-level test around `blacksmith finish` command wiring to assert non-Rust quality gate commands are picked up in a worktree when only repo-root `.blacksmith/config.toml` exists.

@@ -3636,3 +3636,24 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Task
 - Add an integration-style test with a mocked/fake `bd` command path to validate end-to-end command sequencing (`close child -> sync -> close parent -> sync`) across multiple hierarchy levels.
+
+--- 2026-02-18 22:27:44 | simple-agent-harness-hz9a ---
+## Session: Fix worktree config discovery for blacksmith finish (simple-agent-harness-hz9a)
+
+### Completed
+- Updated `HarnessConfig::load()` in `src/config.rs` to add worktree-safe config lookup.
+- When default `.blacksmith/config.toml` is missing from CWD, config loading now resolves git repo root using `git rev-parse --git-common-dir` (fallback `--show-toplevel`) and retries `<repo>/.blacksmith/config.toml`.
+- Added unit test `test_load_from_worktree_finds_repo_root_config` that creates a temp git repo + worktree and verifies loading from a worktree path resolves parent repo config.
+
+### Verification Run
+- `cargo test test_load_from_worktree_finds_repo_root_config` (pass)
+- `cargo test --release` (pass: 1128 passed, 0 failed, 1 ignored)
+- `cargo clippy --fix --allow-dirty` (pass)
+- `cargo fmt -- src/config.rs` (applied)
+
+### Current State
+- Worktree execution of `blacksmith finish` no longer falls directly to compiled defaults when project config exists at repo root.
+- Change scope is limited to `src/config.rs`.
+
+### Suggested Next Task
+- Add a small integration-level test around `blacksmith finish` command wiring to assert non-Rust quality gate commands are picked up in a worktree when only repo-root `.blacksmith/config.toml` exists.

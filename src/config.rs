@@ -2,6 +2,7 @@ use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Top-level configuration loaded from `.blacksmith/config.toml`
 /// (falls back to `blacksmith.toml` then `harness.toml` for backwards compatibility).
@@ -33,9 +34,10 @@ impl HarnessConfig {
     /// Load configuration from a TOML file with fallback chain:
     ///
     /// 1. The requested `path` (default: `.blacksmith/config.toml`)
-    /// 2. `blacksmith.toml` in the current directory (deprecation warning)
-    /// 3. `harness.toml` in the current directory (deprecation warning)
-    /// 4. Compiled defaults
+    /// 2. `.blacksmith/config.toml` at git repo root (worktree-safe)
+    /// 3. `blacksmith.toml` in the current directory (deprecation warning)
+    /// 4. `harness.toml` in the current directory (deprecation warning)
+    /// 5. Compiled defaults
     ///
     /// If an explicit `-c` path is given that doesn't match the default,
     /// only that path is tried (no fallback chain).
@@ -64,6 +66,17 @@ impl HarnessConfig {
         if !is_default_path {
             // Explicit -c path that doesn't exist — return defaults
             return Ok(Self::default());
+        }
+
+        // Worktree fallback: find .blacksmith/config.toml at the repository root.
+        if let Some(repo_root) = Self::git_repo_root(path) {
+            let repo_config = repo_root.join(".blacksmith").join("config.toml");
+            match Self::load_file(&repo_config) {
+                Ok(config) => return Ok(config),
+                Err(ConfigError::Read { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
         }
 
         // Fallback: try blacksmith.toml
@@ -101,6 +114,53 @@ impl HarnessConfig {
             source: e,
         })?;
         Ok(config)
+    }
+
+    fn git_repo_root(path: &Path) -> Option<PathBuf> {
+        let workdir_hint = if path.is_absolute() {
+            path.parent()?.parent().map(Path::to_path_buf)
+        } else {
+            None
+        };
+
+        let mut common_dir_cmd = Command::new("git");
+        if let Some(ref hint) = workdir_hint {
+            common_dir_cmd.arg("-C").arg(hint);
+        }
+        let common_dir_output = common_dir_cmd
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .output()
+            .ok()?;
+        if common_dir_output.status.success() {
+            let common_dir = String::from_utf8(common_dir_output.stdout).ok()?;
+            let common_dir = PathBuf::from(common_dir.trim());
+            if !common_dir.as_os_str().is_empty() {
+                if common_dir.file_name().map(|f| f == ".git").unwrap_or(false) {
+                    if let Some(repo_root) = common_dir.parent() {
+                        return Some(repo_root.to_path_buf());
+                    }
+                }
+                return Some(common_dir);
+            }
+        }
+
+        let mut toplevel_cmd = Command::new("git");
+        if let Some(ref hint) = workdir_hint {
+            toplevel_cmd.arg("-C").arg(hint);
+        }
+        let toplevel_output = toplevel_cmd
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .ok()?;
+        if !toplevel_output.status.success() {
+            return None;
+        }
+        let root = String::from_utf8(toplevel_output.stdout).ok()?;
+        let trimmed = root.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(PathBuf::from(trimmed))
     }
 
     /// Apply CLI overrides to this config. CLI values take precedence
@@ -2653,6 +2713,91 @@ max_iterations = 42
         // Instead, test that load_file works for an explicit path.
         let config = HarnessConfig::load_file(&old_path).unwrap();
         assert_eq!(config.session.max_iterations, 42);
+    }
+
+    #[test]
+    fn test_load_from_worktree_finds_repo_root_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_root = dir.path().join("repo");
+        let worktree_path = dir.path().join("wt");
+        std::fs::create_dir_all(&repo_root).unwrap();
+
+        let status = std::process::Command::new("git")
+            .args(["init", repo_root.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let status = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "config",
+                "user.email",
+                "test@example.com",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let status = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "config",
+                "user.name",
+                "test",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        std::fs::write(repo_root.join("README.md"), "seed").unwrap();
+        let status = std::process::Command::new("git")
+            .args(["-C", repo_root.to_str().unwrap(), "add", "README.md"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let status = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "commit",
+                "-m",
+                "init",
+                "--no-gpg-sign",
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let status = std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "worktree",
+                "add",
+                worktree_path.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let bs_dir = repo_root.join(".blacksmith");
+        std::fs::create_dir_all(&bs_dir).unwrap();
+        std::fs::write(
+            bs_dir.join("config.toml"),
+            r#"
+[session]
+max_iterations = 91
+"#,
+        )
+        .unwrap();
+
+        let worktree_default = worktree_path.join(".blacksmith").join("config.toml");
+        let config = HarnessConfig::load(&worktree_default).unwrap();
+        assert_eq!(config.session.max_iterations, 91);
     }
 
     #[test]
