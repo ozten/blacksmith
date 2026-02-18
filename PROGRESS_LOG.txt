@@ -3636,3 +3636,26 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Task
 - Add an integration-style test with a mocked/fake `bd` command path to validate end-to-end command sequencing (`close child -> sync -> close parent -> sync`) across multiple hierarchy levels.
+
+--- 2026-02-18 22:27:31 | simple-agent-harness-n1i5 ---
+## Session: Periodic orphaned bead recovery during coordinator runtime (simple-agent-harness-n1i5)
+
+### Completed
+- Added periodic orphan recovery in `src/coordinator.rs` with a 60-second interval inside the coordinator loop.
+- Updated orphan recovery to skip bead IDs currently assigned to non-idle workers, preventing interference with active work.
+- Extended recovery logging with a `phase` field (`startup` vs `periodic`) to make mid-run recoveries visible in logs.
+- Added unit test coverage for non-idle assignment filtering.
+
+### Verification Run
+- `cargo test test_non_idle_assigned_bead_ids_excludes_idle_workers` (pass)
+- `cargo test test_recover_orphaned_beads_does_not_panic` (pass)
+- `cargo test --release` (pass; 1128 passed, 0 failed, 1 ignored)
+- `cargo clippy --fix --allow-dirty` (pass)
+- `cargo fmt --check` (reported diffs; formatted with `cargo fmt`)
+
+### Current State
+- Coordinator now performs startup and periodic orphan recovery.
+- In-progress beads that are not tied to any non-idle worker are re-opened during runtime without waiting for coordinator restart.
+
+### Suggested Next Task
+- Add an integration-style test with mocked `bd` command responses to validate periodic recovery behavior end-to-end (in-progress list + active assignment exclusion + reopen call sequencing).

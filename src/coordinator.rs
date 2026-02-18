@@ -14,7 +14,7 @@ use crate::estimation::{self, BeadNode};
 use crate::improve;
 use crate::ingest;
 use crate::integrator::{close_bead_in_bd, CircuitBreaker, IntegrationQueue, TrippedFailure};
-use crate::pool::{PoolError, SessionOutcome, WorkerPool};
+use crate::pool::{PoolError, SessionOutcome, WorkerPool, WorkerState};
 use crate::prompt;
 use crate::ratelimit;
 use crate::scheduler::{self, InProgressAssignment, ReadyBead};
@@ -24,10 +24,11 @@ use crate::worktree;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use tokio::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Well-known filename that agents write to request affected set expansion.
 const EXPAND_FILE_NAME: &str = ".blacksmith-expand";
+const ORPHAN_RECOVERY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Summary of a coordinator run.
 #[derive(Debug)]
@@ -161,7 +162,8 @@ pub async fn run(
     // Recover orphaned in_progress beads from previous crash/kill.
     // Since the singleton lock guarantees no other coordinator is running,
     // any in_progress beads without an active worker are guaranteed orphaned.
-    recover_orphaned_beads();
+    recover_orphaned_beads(&HashSet::new(), "startup");
+    let mut last_orphan_recovery = Instant::now();
 
     // Clean up stale worktrees from previous crash/kill.
     // No workers are active yet, so every existing worktree is orphaned.
@@ -203,6 +205,12 @@ pub async fn run(
                 failed_beads,
                 exit_reason: CoordinatorExitReason::StopFile,
             };
+        }
+
+        if last_orphan_recovery.elapsed() >= ORPHAN_RECOVERY_INTERVAL {
+            let assigned_beads = non_idle_assigned_bead_ids(&pool);
+            recover_orphaned_beads(&assigned_beads, "periodic");
+            last_orphan_recovery = Instant::now();
         }
 
         // Poll for completed workers
@@ -265,7 +273,10 @@ pub async fn run(
             let agent_cmd = &config.agent.command;
             eprintln!();
             eprintln!("ERROR: Agent quota exhausted — all recent workers failed with a usage limit error.");
-            eprintln!("       The {} agent has hit its plan/credit limit.", agent_cmd);
+            eprintln!(
+                "       The {} agent has hit its plan/credit limit.",
+                agent_cmd
+            );
             eprintln!();
             eprintln!("  To resume, either:");
             eprintln!("    1. Wait for your quota to reset");
@@ -1073,33 +1084,47 @@ fn close_epic_when_children_complete(epic_id: &str) -> bool {
     true
 }
 
-/// Recover orphaned in_progress beads on coordinator startup.
+/// Recover orphaned in_progress beads and reset them to open.
 ///
 /// When blacksmith crashes or is killed, beads marked in_progress stay stuck.
-/// Since the singleton lock guarantees no other coordinator is running at this point,
-/// any in_progress bead is guaranteed orphaned. This function queries for all
-/// in_progress beads and resets them to open so they become schedulable again.
-fn recover_orphaned_beads() {
+/// This function queries all in_progress beads and re-opens any that are not
+/// currently assigned to an active/non-idle worker.
+fn recover_orphaned_beads(excluded_ids: &HashSet<String>, phase: &str) {
     let output = match std::process::Command::new("bd")
         .args(["list", "--status=in_progress", "--json"])
         .output()
     {
         Ok(output) if output.status.success() => output,
         Ok(_) => {
-            tracing::debug!("bd list --status=in_progress returned non-zero, skipping recovery");
+            tracing::debug!(
+                phase,
+                "bd list --status=in_progress returned non-zero, skipping recovery"
+            );
             return;
         }
         Err(e) => {
-            tracing::debug!(error = %e, "bd command not available, skipping orphaned bead recovery");
+            tracing::debug!(
+                phase,
+                error = %e,
+                "bd command not available, skipping orphaned bead recovery"
+            );
             return;
         }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let orphaned_ids = parse_orphaned_bead_ids(&stdout);
+    let listed_ids = parse_orphaned_bead_ids(&stdout);
+    let orphaned_ids: Vec<String> = listed_ids
+        .into_iter()
+        .filter(|id| !excluded_ids.contains(id))
+        .collect();
 
     if orphaned_ids.is_empty() {
-        tracing::debug!("no orphaned in_progress beads to recover");
+        tracing::debug!(
+            phase,
+            excluded = excluded_ids.len(),
+            "no orphaned in_progress beads to recover"
+        );
         return;
     }
 
@@ -1111,25 +1136,44 @@ fn recover_orphaned_beads() {
         {
             Ok(result) if result.status.success() => {
                 recovered += 1;
-                tracing::info!(bead_id = %id, "recovered orphaned in_progress bead → open");
+                tracing::info!(phase, bead_id = %id, "recovered orphaned in_progress bead → open");
             }
             Ok(result) => {
                 let stderr = String::from_utf8_lossy(&result.stderr);
                 tracing::warn!(
+                    phase,
                     bead_id = %id,
                     stderr = %stderr.trim(),
                     "failed to recover orphaned bead"
                 );
             }
             Err(e) => {
-                tracing::warn!(bead_id = %id, error = %e, "failed to run bd update for orphaned bead");
+                tracing::warn!(
+                    phase,
+                    bead_id = %id,
+                    error = %e,
+                    "failed to run bd update for orphaned bead"
+                );
             }
         }
     }
 
     if recovered > 0 {
-        tracing::info!(count = recovered, "recovered orphaned in_progress beads");
+        tracing::info!(
+            phase,
+            count = recovered,
+            "recovered orphaned in_progress beads"
+        );
     }
+}
+
+/// Return bead IDs assigned to non-idle workers.
+fn non_idle_assigned_bead_ids(pool: &WorkerPool) -> HashSet<String> {
+    pool.snapshot()
+        .into_iter()
+        .filter(|(_, state, bead)| *state != WorkerState::Idle && bead.is_some())
+        .filter_map(|(_, _, bead)| bead.map(|id| id.to_string()))
+        .collect()
 }
 
 /// Parse bead IDs from JSON output of `bd list --status=in_progress --json`.
@@ -1186,7 +1230,7 @@ fn query_ready_beads() -> BeadQuery {
 /// Parse JSON bead data, detect cycles, filter out cycled beads, and return schedulable beads.
 fn parse_and_filter_beads(json_str: &str) -> BeadQuery {
     let (ready_beads, bead_nodes) = parse_ready_beads_json(json_str);
-    let open_ids_all: HashSet<String> = ready_beads.iter().map(|b| b.id.clone()).collect();
+    let _open_ids_all: HashSet<String> = ready_beads.iter().map(|b| b.id.clone()).collect();
 
     // Run cycle detection on the dependency graph
     let cycles = cycle_detect::detect_cycles(&bead_nodes);
@@ -2417,7 +2461,43 @@ mod tests {
     fn test_recover_orphaned_beads_does_not_panic() {
         // When bd is not available, recover_orphaned_beads should
         // gracefully handle the error without panicking
-        recover_orphaned_beads();
+        recover_orphaned_beads(&HashSet::new(), "test");
+    }
+
+    #[test]
+    fn test_non_idle_assigned_bead_ids_excludes_idle_workers() {
+        let dir = tempdir().unwrap();
+        let workers_config = WorkersConfig {
+            max: 2,
+            base_branch: "main".to_string(),
+            worktrees_dir: "worktrees".to_string(),
+            persistent: false,
+        };
+        let mut pool = WorkerPool::new(
+            &workers_config,
+            dir.path().to_path_buf(),
+            dir.path().join("worktrees"),
+            0,
+        );
+
+        pool.set_worker_state_for_test(
+            0,
+            crate::pool::WorkerState::Coding,
+            Some(1),
+            Some("beads-active".to_string()),
+            Some(dir.path().join("worker-0")),
+        );
+        pool.set_worker_state_for_test(
+            1,
+            crate::pool::WorkerState::Idle,
+            Some(2),
+            Some("beads-idle".to_string()),
+            Some(dir.path().join("worker-1")),
+        );
+
+        let assigned = non_idle_assigned_bead_ids(&pool);
+        assert!(assigned.contains("beads-active"));
+        assert!(!assigned.contains("beads-idle"));
     }
 
     // ── Auto-promotion tests ───────────────────────────────────────────
