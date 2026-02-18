@@ -149,7 +149,9 @@ main() {
 
     rm -rf "$tmp_dir"
 
-    log_success "blacksmith installed to $install_dir/blacksmith"
+    log_success "Installed to $install_dir:"
+    log_success "  blacksmith"
+    [[ -f "$install_dir/blacksmith-ui" ]] && log_success "  blacksmith-ui (dashboard)"
 
     # PATH check
     if [[ ":$PATH:" != *":$install_dir:"* ]]; then
