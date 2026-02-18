@@ -5,6 +5,12 @@
 
 A supervised agent harness that runs AI coding agents in a loop — dispatching prompts, monitoring sessions, enforcing health invariants, collecting metrics, and repeating.
 
+Currently, blacksmith depends on your using `bd` to record tasks you would like accomplished.
+
+beads - https://github.com/steveyegge/beads
+
+`blacksmith init` currently depends on `claude` existing and being setup.
+
 ## Install
 
 ```bash
@@ -29,7 +35,7 @@ blacksmith init
 This creates a `.blacksmith/` directory with a default `config.toml` and a `PROMPT.md` template. Edit `PROMPT.md` with instructions for your agent, then start the loop:
 
 ```bash
-blacksmith loop
+blacksmith
 ```
 
 Blacksmith runs `claude` by default for up to 25 productive iterations, monitoring for stale sessions, retrying empty outputs, and handling rate limits with exponential backoff.
