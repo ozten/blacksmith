@@ -1,16 +1,19 @@
-## Session: Stale worker status cleanup (simple-agent-harness-yz95)
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-1d04)
 
 ### Completed
-- Updated `blacksmith workers status` to self-heal stale active assignments.
-- Added filtering against current open bead IDs from `bd list --status=open --json`.
-- Added reap behavior: active DB rows for non-open beads are marked `integrated` and excluded from status output.
-- Added unit tests for bead-id JSON parsing and stale assignment reaping behavior.
-- Added `## Verify` notes to the bead with exact validation commands.
+- Added runtime storage path resolution in `src/main.rs` so relative `storage.data_dir` (default `.blacksmith`) resolves against the git common repository root when using default config path `.blacksmith/config.toml`.
+- Wired all CLI command paths that construct `DataDir` to use the new resolver, including init/brief/gc/migrate/workers/arch/estimate/integration/improve/metrics/main run.
+- Updated serve command path to apply the same resolution before starting server.
+- Added tests proving:
+  - main checkout and git worktree resolve to the same `.blacksmith` path
+  - explicit non-default config path (`-c` equivalent) keeps relative storage path behavior unchanged.
+- Added bead `## Verify` notes with exact commands and expected outcomes.
 
 ### Current State
-- `workers status` now shows only assignments tied to open beads when `bd` is available.
-- Historical assignment rows are preserved (status transitioned to `integrated` rather than deleted).
-- All required quality gates passed: release tests, clippy fix, and fmt check.
+- `src/main.rs` contains the full implementation and tests.
+- Full release tests pass.
+- Clippy fix completed successfully.
+- Formatting differences found by `cargo fmt --check` were corrected via `cargo fmt`.
 
 ### Suggested Next Task
-- Validate in a real multi-worker run that stale entries are automatically reaped from older DB state when `workers status` is invoked.
+- Continue with the remaining P0 bead: `simple-agent-harness-hyfd` (finish/integrator lifecycle redesign).

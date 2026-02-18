@@ -49,7 +49,7 @@ mod worktree;
 use clap::{Parser, Subcommand};
 use config::{CliOverrides, HarnessConfig};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 /// A Rust CLI tool that runs an AI coding agent in a supervised loop:
@@ -386,6 +386,66 @@ impl Cli {
             retries: self.retries,
         }
     }
+}
+
+fn is_default_cli_config_path(path: &Path) -> bool {
+    path.file_name()
+        .map(|f| f == "config.toml")
+        .unwrap_or(false)
+        && path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|f| f == ".blacksmith")
+            .unwrap_or(false)
+}
+
+fn git_common_dir_from(cwd: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(cwd.join(path))
+    }
+}
+
+fn resolve_storage_data_dir_for_cwd(
+    storage_data_dir: &Path,
+    cli_config_path: &Path,
+    cwd: &Path,
+) -> PathBuf {
+    if storage_data_dir.is_absolute() || !is_default_cli_config_path(cli_config_path) {
+        return storage_data_dir.to_path_buf();
+    }
+
+    let Some(git_common_dir) = git_common_dir_from(cwd) else {
+        return storage_data_dir.to_path_buf();
+    };
+    let Some(repo_root) = git_common_dir.parent() else {
+        return storage_data_dir.to_path_buf();
+    };
+    repo_root.join(storage_data_dir)
+}
+
+fn runtime_data_dir(storage_data_dir: &Path, cli_config_path: &Path) -> data_dir::DataDir {
+    let resolved = std::env::current_dir()
+        .ok()
+        .map(|cwd| resolve_storage_data_dir_for_cwd(storage_data_dir, cli_config_path, &cwd))
+        .unwrap_or_else(|| storage_data_dir.to_path_buf());
+    data_dir::DataDir::new(resolved)
 }
 
 /// Handle `blacksmith integration log [--last N]` — show integration history.
@@ -1075,7 +1135,7 @@ async fn main() {
         // Generate project-aware config and initialize data directory
         let config_content = init::generate_config_toml(&project_type, &agent, &commands);
         let config = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config.storage.data_dir);
+        let dd = runtime_data_dir(&config.storage.data_dir, &cli.config);
         match dd.init_with_config(&config_content) {
             Ok(_) => {
                 println!(
@@ -1167,7 +1227,7 @@ async fn main() {
 
     if let Some(Commands::Brief) = &cli.command {
         let config_for_brief = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_brief.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_brief.storage.data_dir, &cli.config);
         let db_path = dd.db();
         let targets = &config_for_brief.metrics.targets;
         let targets_opt = if targets.rules.is_empty() {
@@ -1195,7 +1255,7 @@ async fn main() {
     }) = &cli.command
     {
         let config_for_gc = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_gc.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_gc.storage.data_dir, &cli.config);
         if let Err(e) = dd.ensure_initialized() {
             eprintln!("Error initializing data directory: {e}");
             std::process::exit(1);
@@ -1217,7 +1277,7 @@ async fn main() {
             std::process::exit(1);
         }
         let config_for_migrate = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_migrate.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_migrate.storage.data_dir, &cli.config);
         if let Err(e) = dd.ensure_initialized() {
             eprintln!("Error initializing data directory: {e}");
             std::process::exit(1);
@@ -1231,7 +1291,7 @@ async fn main() {
 
     if let Some(Commands::Workers { action }) = &cli.command {
         let config_for_workers = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_workers.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_workers.storage.data_dir, &cli.config);
         let db_path = dd.db();
 
         match action {
@@ -1269,6 +1329,11 @@ async fn main() {
     #[cfg(feature = "serve")]
     if let Some(Commands::Serve { port, bind }) = &cli.command {
         let mut config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        config.storage.data_dir = resolve_storage_data_dir_for_cwd(
+            &config.storage.data_dir,
+            &cli.config,
+            &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        );
         if let Some(p) = port {
             config.serve.port = *p;
         }
@@ -1284,7 +1349,7 @@ async fn main() {
 
     if let Some(Commands::Arch { json }) = &cli.command {
         let config = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config.storage.data_dir);
+        let dd = runtime_data_dir(&config.storage.data_dir, &cli.config);
         let db_path = dd.db();
         let repo_root = std::env::current_dir().unwrap_or_else(|e| {
             eprintln!("Error: cannot determine current directory: {e}");
@@ -1341,7 +1406,7 @@ async fn main() {
 
     if let Some(Commands::Estimate { workers }) = &cli.command {
         let config_for_estimate = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_estimate.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_estimate.storage.data_dir, &cli.config);
         let db_path = dd.db();
         let conn = match db::open_or_create(&db_path) {
             Ok(c) => c,
@@ -1359,7 +1424,7 @@ async fn main() {
 
     if let Some(Commands::Integration { action }) = &cli.command {
         let config_for_integration = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_integration.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_integration.storage.data_dir, &cli.config);
         let db_path = dd.db();
 
         let result = match action {
@@ -1381,7 +1446,7 @@ async fn main() {
 
     if let Some(Commands::Improve { action }) = &cli.command {
         let config_for_improve = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_improve.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_improve.storage.data_dir, &cli.config);
         let db_path = dd.db();
 
         let result = match action {
@@ -1431,7 +1496,7 @@ async fn main() {
 
     if let Some(Commands::Metrics { action }) = &cli.command {
         let config_for_metrics = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_metrics.storage.data_dir);
+        let dd = runtime_data_dir(&config_for_metrics.storage.data_dir, &cli.config);
         let db_path = dd.db();
         let result = match action {
             MetricsAction::Log { file } => metrics_cmd::handle_log(&db_path, file),
@@ -1517,7 +1582,7 @@ async fn main() {
     }
 
     // Auto-initialize data directory on first run
-    let data_dir = data_dir::DataDir::new(&config.storage.data_dir);
+    let data_dir = runtime_data_dir(&config.storage.data_dir, &cli.config);
     if let Err(e) = data_dir.ensure_initialized() {
         tracing::error!(error = %e, "failed to initialize data directory");
         std::process::exit(1);
@@ -1740,6 +1805,71 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git {:?} failed in {}",
+            args,
+            dir.display()
+        );
+    }
+
+    fn init_repo_with_worktree() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "test@example.com"]);
+        run_git(&repo, &["config", "user.name", "Test User"]);
+        std::fs::write(repo.join("README.md"), "init\n").unwrap();
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "init"]);
+
+        let worktree = dir.path().join("wt1");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_string_lossy().as_ref(),
+                "HEAD",
+            ],
+        );
+        (dir, repo, worktree)
+    }
+
+    #[test]
+    fn test_resolve_storage_data_dir_shared_between_main_and_worktree() {
+        let (_dir, repo, worktree) = init_repo_with_worktree();
+        let config = Path::new(".blacksmith/config.toml");
+        let storage = Path::new(".blacksmith");
+
+        let main_path = resolve_storage_data_dir_for_cwd(storage, config, &repo);
+        let worktree_path = resolve_storage_data_dir_for_cwd(storage, config, &worktree);
+
+        assert_eq!(main_path, repo.join(".blacksmith"));
+        assert_eq!(worktree_path, repo.join(".blacksmith"));
+    }
+
+    #[test]
+    fn test_resolve_storage_data_dir_respects_non_default_config_path() {
+        let (_dir, _repo, worktree) = init_repo_with_worktree();
+        let storage = Path::new(".blacksmith");
+
+        let resolved =
+            resolve_storage_data_dir_for_cwd(storage, Path::new("custom.toml"), &worktree);
+
+        assert_eq!(resolved, PathBuf::from(".blacksmith"));
+    }
 
     #[test]
     fn test_workers_status_empty() {

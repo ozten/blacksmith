@@ -3672,3 +3672,24 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Task
 - Validate in a real multi-worker run that stale entries are automatically reaped from older DB state when `workers status` is invoked.
+
+--- 2026-02-18 22:44:26 | simple-agent-harness-1d04 ---
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-1d04)
+
+### Completed
+- Added runtime storage path resolution in `src/main.rs` so relative `storage.data_dir` (default `.blacksmith`) resolves against the git common repository root when using default config path `.blacksmith/config.toml`.
+- Wired all CLI command paths that construct `DataDir` to use the new resolver, including init/brief/gc/migrate/workers/arch/estimate/integration/improve/metrics/main run.
+- Updated serve command path to apply the same resolution before starting server.
+- Added tests proving:
+  - main checkout and git worktree resolve to the same `.blacksmith` path
+  - explicit non-default config path (`-c` equivalent) keeps relative storage path behavior unchanged.
+- Added bead `## Verify` notes with exact commands and expected outcomes.
+
+### Current State
+- `src/main.rs` contains the full implementation and tests.
+- Full release tests pass.
+- Clippy fix completed successfully.
+- Formatting differences found by `cargo fmt --check` were corrected via `cargo fmt`.
+
+### Suggested Next Task
+- Continue with the remaining P0 bead: `simple-agent-harness-hyfd` (finish/integrator lifecycle redesign).
