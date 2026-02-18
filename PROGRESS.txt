@@ -1,23 +1,18 @@
-## Session: Delete runner.rs (simple-agent-harness-teuq)
+## Session: Always use coordinator for single-agent mode (simple-agent-harness-0o9g)
 
 ### Completed
-- Deleted src/runner.rs entirely (dead code after coordinator handles all modes)
-- Removed `mod runner;` from src/main.rs
-- Removed `use crate::runner;` from src/coordinator.rs
-- Moved `format_duration_secs` and `build_progress_string` utility functions into coordinator.rs (they were referenced by coordinator progress printing)
-- Moved corresponding tests for those functions into coordinator's test module
-- Updated coordinator doc comment to remove runner::RunSummary reference
-
-### Files Changed
-- src/runner.rs (deleted)
-- src/main.rs (removed mod runner declaration)
-- src/coordinator.rs (removed runner import, added estimation import, moved 2 utility functions + tests)
+- Verified all implementation for single-agent coordinator mode is already in place:
+  - main.rs: Always calls coordinator::run() (no runner branch)
+  - pool.rs: is_single_agent(), skip worktree creation in spawn_worker(), skip worktree cleanup in reset_worker()
+  - coordinator.rs: close_bead_direct() path for single-agent mode (skip integration merge)
+  - runner.rs: Already deleted in previous session (simple-agent-harness-teuq)
+  - Tests: test_spawn_worker_single_agent_no_worktree, test_is_single_agent, test_coordinator_single_agent_direct_commit, test_coordinator_exits_with_no_work
+- All 1103 tests pass, clippy clean, fmt clean
 
 ### Current State
-- All 1103 tests pass (1 ignored)
-- Clippy clean (only pre-existing watchdog.rs warnings)
-- Fmt clean
-- No remaining references to runner:: in the codebase
+- Coordinator handles all modes (single and multi-agent)
+- Single-agent mode (max=1) runs in repo dir directly, no worktree overhead
+- No remaining runner references
 
 ### Suggested Next Tasks
 - simple-agent-harness-ukxz: Harden customize_prompt_with_llm result handling

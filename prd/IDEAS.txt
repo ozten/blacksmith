@@ -23,3 +23,178 @@ used in other projects with other frameworks and libraries. To clearly seperate
 our instance of prompts and configs (which are dogfood) from what is deployed to customers.
 
 We need to move the Rust specific verification out into customer config.
+
+---
+
+Please read these ideas from a similar tool and then evaluate how well we are doign the same with our self-improvement and other features:
+
+They instrumented the agent.
+
+They logged every action:
+
+tool calls
+
+reasoning
+
+failures
+
+exits
+
+timeouts
+
+Then they analyzed patterns of failure across many runs.
+
+You improve them by observing failure distributions.
+
+They even created a trace-analysis agent to review runs and propose harness improvements.
+
+The Build-Verify Loop
+
+They added to the system prompt:
+
+Plan
+
+Implement
+
+Run tests
+
+Compare to spec
+
+Fix
+
+Repeat
+
+Performance jumped.
+
+The breakthrough:
+Agents don’t naturally test.
+You must force verification behavior.
+
+They even added middleware that intercepts the agent when it tries to exit and says:
+
+“Before finishing, verify against the task spec.”
+
+This alone was massive.
+
+Key Insight 3 — Context Injection Is Critical
+
+Agents fail not because they’re dumb, but because they’re disoriented.
+
+So they automatically injected environment context:
+
+directory tree
+
+available tools
+
+installed languages
+
+paths
+
+constraints
+
+evaluation criteria
+
+Why this matters:
+
+Agents are terrible at exploration/search.
+Every shell command they run is a gamble.
+
+By giving them a “map of the world,” error rates dropped.
+
+The job of the harness engineer is to prepare the environment description, not just prompt.
+
+This is basically:
+RAG, but for runtime environment awareness.
+
+Key Insight 4 — Agents Get Stuck (Doom Loops)
+
+They discovered agents will:
+
+Make tiny variations to the same broken solution 10+ times.
+
+Classic behavior:
+
+edit file
+run
+fail
+tiny edit
+fail
+tiny edit
+fail
+tiny edit
+fail
+
+
+They added loop detection middleware:
+
+track edits per file
+
+if too many → inject message: reconsider approach
+
+This improved recovery.
+
+Important:
+They’re not improving reasoning —
+they’re improving metacognition cues.
+
+Key Insight 5 — Self-Verification > More Intelligence
+
+Surprising finding:
+
+Running the model at maximum reasoning power made performance worse.
+
+Why?
+
+It used too much time and timed out.
+
+Instead they used:
+
+“Reasoning sandwich”
+high reasoning for planning
+lower for execution
+high again for verification
+
+Meaning:
+Where reasoning is spent matters more than how much reasoning exists.
+
+This is essentially compute scheduling for thought.
+
+Key Insight 6 — Agents Need Time Awareness
+
+Agents are horrible at budgeting time.
+
+So they injected:
+
+time warnings
+
+deadline awareness
+
+This helped them switch from building → verifying before timeout.
+
+This sounds trivial — it was not.
+
+It significantly improved success rate.
+
+Key Insight 7 — The Most Important Principle
+
+From their own takeaways:
+
+1) Context engineering
+
+Give the model a map of reality.
+
+2) Force self-verification
+
+Agents must test.
+
+3) Use tracing feedback loops
+
+Measure failures at scale.
+
+4) Add guardrails for model weaknesses
+
+Design around current limitations.
+
+5) Tune harness per model
+
+Different models require different scaffolding.
