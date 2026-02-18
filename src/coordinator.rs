@@ -424,6 +424,14 @@ pub async fn run(
                             bead_id,
                             "assigned bead to worker"
                         );
+                        if affected_globs_str.is_none() {
+                            tracing::warn!(
+                                bead_id,
+                                "bead has no 'affected:' declaration in its design section — \
+                                 add 'affected: <glob>, ...' to enable smarter parallel scheduling \
+                                 (e.g. 'affected: src/auth/**, prisma/schema.prisma')"
+                            );
+                        }
                     }
                     Err(PoolError::NoIdleWorker) => break,
                     Err(e) => {

@@ -5,7 +5,9 @@
 //!
 //! The scheduler uses these sets to determine which tasks can run in parallel.
 //! Two tasks overlap if any of their globs could match the same files.
-//! A bead without an affected set is treated as affecting everything.
+//! A bead without an affected set is treated optimistically — it is allowed to
+//! run in parallel with other tasks, and conflicts are resolved at integration
+//! time. Adding `affected:` lines to bead designs enables smarter scheduling.
 //!
 //! The scheduler runs when a worker becomes idle. It queries for ready beads
 //! (open status, all deps closed), filters by affected set overlap with
@@ -136,8 +138,8 @@ pub struct InProgressAssignment {
 /// do not overlap with any in-progress task's affected set.
 ///
 /// Beads are returned in their original order (assumed to be sorted by priority).
-/// A bead with no affected set (`None`) is treated as affecting everything and
-/// will conflict with all in-progress tasks (unless there are none in progress).
+/// A bead with no affected set (`None`) is treated optimistically — it is
+/// allowed to run in parallel, with conflicts resolved at integration time.
 pub fn next_assignable_tasks(
     ready_beads: &[ReadyBead],
     in_progress: &[InProgressAssignment],
@@ -148,27 +150,21 @@ pub fn next_assignable_tasks(
     }
 
     // Collect all locked globs from in-progress assignments.
-    // If any in-progress task has no affected set, it locks everything.
+    // In-progress tasks with no affected set are skipped (optimistic — they
+    // don't block other work; conflicts are caught at integration time).
     let mut locked_globs: Vec<&str> = Vec::new();
-    let mut any_in_progress_locks_all = false;
 
     for a in in_progress {
-        match &a.affected_globs {
-            None => {
-                any_in_progress_locks_all = true;
-                break;
-            }
-            Some(globs) => {
-                for g in globs {
-                    locked_globs.push(g.as_str());
-                }
+        if let Some(globs) = &a.affected_globs {
+            for g in globs {
+                locked_globs.push(g.as_str());
             }
         }
     }
 
-    // If any in-progress task locks everything, no new tasks can be assigned.
-    if any_in_progress_locks_all {
-        return Vec::new();
+    // If no in-progress task has declared globs, everything is assignable.
+    if locked_globs.is_empty() {
+        return ready_beads.iter().map(|b| b.id.clone()).collect();
     }
 
     let locked_owned: Vec<String> = locked_globs.iter().map(|s| s.to_string()).collect();
@@ -177,8 +173,8 @@ pub fn next_assignable_tasks(
         .iter()
         .filter(|b| {
             match &b.affected_globs {
-                // No affected set = affects everything → conflicts with any lock.
-                None => false,
+                // No affected set → optimistic: allow it, resolve at integration.
+                None => true,
                 Some(bead_globs) => !globs_overlap(bead_globs, &locked_owned),
             }
         })
@@ -476,25 +472,25 @@ mod tests {
     }
 
     #[test]
-    fn assignable_no_affected_set_on_bead_conflicts_with_everything() {
+    fn assignable_no_affected_set_on_bead_allowed_optimistically() {
         let beads = vec![
-            bead("b1", 1, None), // no affected set → conflicts
+            bead("b1", 1, None), // no affected set → optimistic: allowed
             bead("b2", 2, Some(vec!["tests/**"])),
         ];
         let in_progress = vec![assignment("x1", Some(vec!["src/db.rs"]))];
         let result = next_assignable_tasks(&beads, &in_progress);
-        assert_eq!(result, vec!["b2"]);
+        assert_eq!(result, vec!["b1", "b2"]);
     }
 
     #[test]
-    fn assignable_no_affected_set_on_in_progress_locks_all() {
+    fn assignable_no_affected_set_on_in_progress_does_not_lock() {
         let beads = vec![
             bead("b1", 1, Some(vec!["src/db.rs"])),
             bead("b2", 2, Some(vec!["tests/**"])),
         ];
-        let in_progress = vec![assignment("x1", None)]; // locks everything
+        let in_progress = vec![assignment("x1", None)]; // optimistic: doesn't lock
         let result = next_assignable_tasks(&beads, &in_progress);
-        assert!(result.is_empty());
+        assert_eq!(result, vec!["b1", "b2"]);
     }
 
     #[test]
