@@ -3508,3 +3508,20 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Tasks
 - simple-agent-harness-6ugm: Strengthen LLM customization prompt to forbid editing
+
+--- 2026-02-18 02:09:13 | simple-agent-harness-6ugm ---
+## Session: Strengthen LLM customization prompt (simple-agent-harness-6ugm)
+
+### Completed
+- Added explicit tool-access warning to LLM_CUSTOMIZATION_PROMPT in src/init.rs:
+  - "IMPORTANT: You only have access to Read, Glob, and Grep tools. Do NOT attempt to edit or write any files."
+  - "Your entire response must be the complete, updated PROMPT.md content. Do not include explanations, summaries, or commentary."
+- Appended "Do NOT output a summary or explanation." to the final output instruction line
+- All 1108 tests pass, clippy clean, fmt clean
+
+### Current State
+- LLM customization prompt now explicitly forbids file editing and demands full content output
+- Belt-and-suspenders with the validation in apply_llm_prompt_result() from previous session
+
+### Suggested Next Tasks
+- Pick next ready bead from the queue

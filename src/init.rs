@@ -289,6 +289,9 @@ pub fn write_prompt_md_if_missing(project_root: &Path, content: &str) -> std::io
 
 const LLM_CUSTOMIZATION_PROMPT: &str = r#"You are customizing a PROMPT.md file for an AI coding agent managed by blacksmith.
 
+IMPORTANT: You only have access to Read, Glob, and Grep tools. Do NOT attempt to edit or write any files.
+Your entire response must be the complete, updated PROMPT.md content. Do not include explanations, summaries, or commentary.
+
 The PROMPT.md at ./PROMPT.md contains a template with generic verification commands.
 Your job is to analyze THIS specific project and update ONLY the verification/commands
 sections to match the actual project setup.
@@ -307,7 +310,7 @@ Steps:
 4. Update any inline command examples that reference test/lint/format commands
 5. Do NOT change the structure, workflow logic, turn budgets, or bead protocol sections
 
-Output the complete updated PROMPT.md file content, nothing else."#;
+Output the complete updated PROMPT.md file content, nothing else. Do NOT output a summary or explanation."#;
 
 /// Run `claude -p` to customize PROMPT.md for the specific project.
 /// Returns `Ok(true)` if customization succeeded, `Ok(false)` if claude was not available.
