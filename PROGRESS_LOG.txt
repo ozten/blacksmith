@@ -3693,3 +3693,21 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Task
 - Continue with the remaining P0 bead: `simple-agent-harness-hyfd` (finish/integrator lifecycle redesign).
+
+--- 2026-02-18 22:52:10 | simple-agent-harness-c34r ---
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-c34r)
+
+### Completed
+- Added command-behavior tests in `src/main.rs` to verify main checkout and git worktree share the same improvements database under default config path resolution.
+- Added coverage proving add/list/show semantics from both locations observe the same records when sharing the repo-level `.blacksmith` path.
+- Added coverage proving explicit non-default config path keeps worktree-local storage behavior (separate DB from main checkout).
+- Updated bead `## Verify` notes with exact commands executed this session.
+
+### Current State
+- Changes are limited to `src/main.rs` tests.
+- `cargo test --release` passed.
+- `cargo clippy --fix --allow-dirty` passed.
+- `cargo fmt --check` passed.
+
+### Suggested Next Task
+- Continue with the next highest-priority ready bead from `bd ready`.

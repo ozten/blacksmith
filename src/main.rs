@@ -1872,6 +1872,82 @@ mod tests {
     }
 
     #[test]
+    fn test_improve_add_list_show_shared_between_main_and_worktree() {
+        let (_dir, repo, worktree) = init_repo_with_worktree();
+        let storage = Path::new(".blacksmith");
+        let config = Path::new(".blacksmith/config.toml");
+
+        let main_data_dir = resolve_storage_data_dir_for_cwd(storage, config, &repo);
+        let worktree_data_dir = resolve_storage_data_dir_for_cwd(storage, config, &worktree);
+        assert_eq!(main_data_dir, repo.join(".blacksmith"));
+        assert_eq!(worktree_data_dir, repo.join(".blacksmith"));
+
+        let main_dd = data_dir::DataDir::new(&main_data_dir);
+        main_dd.ensure_initialized().unwrap();
+        let worktree_dd = data_dir::DataDir::new(&worktree_data_dir);
+        worktree_dd.ensure_initialized().unwrap();
+
+        let main_db = main_dd.db();
+        let worktree_db = worktree_dd.db();
+        assert_eq!(main_db, worktree_db);
+
+        improve::handle_add(&main_db, "from-main", "workflow", None, None, None).unwrap();
+        improve::handle_add(&worktree_db, "from-worktree", "workflow", None, None, None).unwrap();
+
+        let conn_main = db::open_or_create(&main_db).unwrap();
+        let conn_worktree = db::open_or_create(&worktree_db).unwrap();
+
+        let from_main = db::list_improvements(&conn_main, None, None).unwrap();
+        let from_worktree = db::list_improvements(&conn_worktree, None, None).unwrap();
+        assert_eq!(from_main.len(), 2);
+        assert_eq!(from_worktree.len(), 2);
+
+        let r1_from_worktree = db::get_improvement(&conn_worktree, "R1").unwrap().unwrap();
+        let r2_from_main = db::get_improvement(&conn_main, "R2").unwrap().unwrap();
+        assert_eq!(r1_from_worktree.title, "from-main");
+        assert_eq!(r2_from_main.title, "from-worktree");
+    }
+
+    #[test]
+    fn test_improve_add_respects_non_default_config_path_override() {
+        let (_dir, repo, worktree) = init_repo_with_worktree();
+        let storage = Path::new(".blacksmith");
+
+        let main_data_dir =
+            resolve_storage_data_dir_for_cwd(storage, Path::new(".blacksmith/config.toml"), &repo);
+        let worktree_data_dir =
+            resolve_storage_data_dir_for_cwd(storage, Path::new("custom.toml"), &worktree);
+
+        let main_dd = data_dir::DataDir::new(&main_data_dir);
+        main_dd.ensure_initialized().unwrap();
+        let worktree_local_data_dir = worktree.join(worktree_data_dir);
+        let worktree_dd = data_dir::DataDir::new(&worktree_local_data_dir);
+        worktree_dd.ensure_initialized().unwrap();
+
+        let main_db = main_dd.db();
+        let worktree_db = worktree_dd.db();
+        assert_ne!(main_db, worktree_db);
+
+        improve::handle_add(
+            &worktree_db,
+            "worktree-local-only",
+            "workflow",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let conn_main = db::open_or_create(&main_db).unwrap();
+        let conn_worktree = db::open_or_create(&worktree_db).unwrap();
+        let main_items = db::list_improvements(&conn_main, None, None).unwrap();
+        let worktree_items = db::list_improvements(&conn_worktree, None, None).unwrap();
+        assert!(main_items.is_empty());
+        assert_eq!(worktree_items.len(), 1);
+        assert_eq!(worktree_items[0].title, "worktree-local-only");
+    }
+
+    #[test]
     fn test_workers_status_empty() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");

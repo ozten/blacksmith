@@ -1,19 +1,16 @@
-## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-1d04)
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-c34r)
 
 ### Completed
-- Added runtime storage path resolution in `src/main.rs` so relative `storage.data_dir` (default `.blacksmith`) resolves against the git common repository root when using default config path `.blacksmith/config.toml`.
-- Wired all CLI command paths that construct `DataDir` to use the new resolver, including init/brief/gc/migrate/workers/arch/estimate/integration/improve/metrics/main run.
-- Updated serve command path to apply the same resolution before starting server.
-- Added tests proving:
-  - main checkout and git worktree resolve to the same `.blacksmith` path
-  - explicit non-default config path (`-c` equivalent) keeps relative storage path behavior unchanged.
-- Added bead `## Verify` notes with exact commands and expected outcomes.
+- Added command-behavior tests in `src/main.rs` to verify main checkout and git worktree share the same improvements database under default config path resolution.
+- Added coverage proving add/list/show semantics from both locations observe the same records when sharing the repo-level `.blacksmith` path.
+- Added coverage proving explicit non-default config path keeps worktree-local storage behavior (separate DB from main checkout).
+- Updated bead `## Verify` notes with exact commands executed this session.
 
 ### Current State
-- `src/main.rs` contains the full implementation and tests.
-- Full release tests pass.
-- Clippy fix completed successfully.
-- Formatting differences found by `cargo fmt --check` were corrected via `cargo fmt`.
+- Changes are limited to `src/main.rs` tests.
+- `cargo test --release` passed.
+- `cargo clippy --fix --allow-dirty` passed.
+- `cargo fmt --check` passed.
 
 ### Suggested Next Task
-- Continue with the remaining P0 bead: `simple-agent-harness-hyfd` (finish/integrator lifecycle redesign).
+- Continue with the next highest-priority ready bead from `bd ready`.
