@@ -49,7 +49,7 @@ mod worktree;
 use clap::{Parser, Subcommand};
 use config::{CliOverrides, HarnessConfig};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 /// A Rust CLI tool that runs an AI coding agent in a supervised loop:
@@ -386,6 +386,30 @@ impl Cli {
             retries: self.retries,
         }
     }
+}
+
+fn resolve_cli_config_path(cli_config: &Path) -> PathBuf {
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(_) => return cli_config.to_path_buf(),
+    };
+    resolve_cli_config_path_from(cli_config, &cwd)
+}
+
+fn resolve_cli_config_path_from(cli_config: &Path, cwd: &Path) -> PathBuf {
+    if cli_config == Path::new(".blacksmith/config.toml") {
+        return data_dir::resolve_repo_relative_blacksmith_path_from(cli_config, cwd);
+    }
+    cli_config.to_path_buf()
+}
+
+fn load_config_or_default(cli_config: &Path) -> HarnessConfig {
+    HarnessConfig::load(&resolve_cli_config_path(cli_config)).unwrap_or_default()
+}
+
+fn data_dir_for_config(config: &HarnessConfig) -> data_dir::DataDir {
+    let resolved = data_dir::resolve_repo_relative_blacksmith_path(&config.storage.data_dir);
+    data_dir::DataDir::new(resolved)
 }
 
 /// Handle `blacksmith integration log [--last N]` — show integration history.
@@ -1074,8 +1098,8 @@ async fn main() {
 
         // Generate project-aware config and initialize data directory
         let config_content = init::generate_config_toml(&project_type, &agent, &commands);
-        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config.storage.data_dir);
+        let config = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config);
         match dd.init_with_config(&config_content) {
             Ok(_) => {
                 println!(
@@ -1131,7 +1155,7 @@ async fn main() {
             false
         };
         // Advisory preflight — print issues but don't abort init
-        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let config = load_config_or_default(&cli.config);
         let report = preflight::run_preflight(&project_root, &config);
         if !report.is_clean() {
             eprintln!("\nPreflight checks:");
@@ -1156,7 +1180,7 @@ async fn main() {
             eprintln!("Cannot determine current directory: {e}");
             std::process::exit(1);
         });
-        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let config = load_config_or_default(&cli.config);
         let report = preflight::run_preflight(&project_root, &config);
         preflight::print_report(&report);
         if report.has_fatal() {
@@ -1166,8 +1190,8 @@ async fn main() {
     }
 
     if let Some(Commands::Brief) = &cli.command {
-        let config_for_brief = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_brief.storage.data_dir);
+        let config_for_brief = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_brief);
         let db_path = dd.db();
         let targets = &config_for_brief.metrics.targets;
         let targets_opt = if targets.rules.is_empty() {
@@ -1194,8 +1218,8 @@ async fn main() {
         aggressive,
     }) = &cli.command
     {
-        let config_for_gc = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_gc.storage.data_dir);
+        let config_for_gc = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_gc);
         if let Err(e) = dd.ensure_initialized() {
             eprintln!("Error initializing data directory: {e}");
             std::process::exit(1);
@@ -1216,8 +1240,8 @@ async fn main() {
             eprintln!("Run with --consolidate to move legacy files into .blacksmith/");
             std::process::exit(1);
         }
-        let config_for_migrate = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_migrate.storage.data_dir);
+        let config_for_migrate = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_migrate);
         if let Err(e) = dd.ensure_initialized() {
             eprintln!("Error initializing data directory: {e}");
             std::process::exit(1);
@@ -1230,8 +1254,8 @@ async fn main() {
     }
 
     if let Some(Commands::Workers { action }) = &cli.command {
-        let config_for_workers = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_workers.storage.data_dir);
+        let config_for_workers = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_workers);
         let db_path = dd.db();
 
         match action {
@@ -1252,7 +1276,7 @@ async fn main() {
     }
 
     if let Some(Commands::Adapter { action }) = &cli.command {
-        let config_for_adapter = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let config_for_adapter = load_config_or_default(&cli.config);
         match action {
             AdapterAction::Info => handle_adapter_info(&config_for_adapter),
             AdapterAction::List => handle_adapter_list(),
@@ -1268,7 +1292,7 @@ async fn main() {
 
     #[cfg(feature = "serve")]
     if let Some(Commands::Serve { port, bind }) = &cli.command {
-        let mut config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let mut config = load_config_or_default(&cli.config);
         if let Some(p) = port {
             config.serve.port = *p;
         }
@@ -1283,8 +1307,8 @@ async fn main() {
     }
 
     if let Some(Commands::Arch { json }) = &cli.command {
-        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config.storage.data_dir);
+        let config = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config);
         let db_path = dd.db();
         let repo_root = std::env::current_dir().unwrap_or_else(|e| {
             eprintln!("Error: cannot determine current directory: {e}");
@@ -1330,7 +1354,7 @@ async fn main() {
         files,
     }) = &cli.command
     {
-        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let config = load_config_or_default(&cli.config);
         let result = finish::handle_finish(bead_id, message, files, &config.quality_gates);
         if !result.success {
             eprintln!("Error: {}", result.message);
@@ -1340,8 +1364,8 @@ async fn main() {
     }
 
     if let Some(Commands::Estimate { workers }) = &cli.command {
-        let config_for_estimate = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_estimate.storage.data_dir);
+        let config_for_estimate = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_estimate);
         let db_path = dd.db();
         let conn = match db::open_or_create(&db_path) {
             Ok(c) => c,
@@ -1358,8 +1382,8 @@ async fn main() {
     }
 
     if let Some(Commands::Integration { action }) = &cli.command {
-        let config_for_integration = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_integration.storage.data_dir);
+        let config_for_integration = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_integration);
         let db_path = dd.db();
 
         let result = match action {
@@ -1380,8 +1404,8 @@ async fn main() {
     }
 
     if let Some(Commands::Improve { action }) = &cli.command {
-        let config_for_improve = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_improve.storage.data_dir);
+        let config_for_improve = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_improve);
         let db_path = dd.db();
 
         let result = match action {
@@ -1430,8 +1454,8 @@ async fn main() {
     }
 
     if let Some(Commands::Metrics { action }) = &cli.command {
-        let config_for_metrics = HarnessConfig::load(&cli.config).unwrap_or_default();
-        let dd = data_dir::DataDir::new(&config_for_metrics.storage.data_dir);
+        let config_for_metrics = load_config_or_default(&cli.config);
+        let dd = data_dir_for_config(&config_for_metrics);
         let db_path = dd.db();
         let result = match action {
             MetricsAction::Log { file } => metrics_cmd::handle_log(&db_path, file),
@@ -1492,7 +1516,7 @@ async fn main() {
     }
 
     // Load config: file > defaults, then CLI > file
-    let mut config = match HarnessConfig::load(&cli.config) {
+    let mut config = match HarnessConfig::load(&resolve_cli_config_path(&cli.config)) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("Configuration error: {e}");
@@ -1517,7 +1541,7 @@ async fn main() {
     }
 
     // Auto-initialize data directory on first run
-    let data_dir = data_dir::DataDir::new(&config.storage.data_dir);
+    let data_dir = data_dir_for_config(&config);
     if let Err(e) = data_dir.ensure_initialized() {
         tracing::error!(error = %e, "failed to initialize data directory");
         std::process::exit(1);
@@ -2044,5 +2068,65 @@ mod tests {
         config.agent.adapter = Some("raw".to_string());
         let result = handle_adapter_test(&config, &file);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_resolve_cli_config_path_default_uses_repo_shared_blacksmith() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        run_git(&repo, &["init"]);
+        std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+        run_git(&repo, &["add", "README.md"]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "init",
+            ],
+        );
+
+        let worktree = repo.join(".blacksmith/worktrees/worker-0-beads-test");
+        std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_string_lossy().as_ref(),
+                "HEAD",
+            ],
+        );
+
+        let resolved =
+            resolve_cli_config_path_from(Path::new(".blacksmith/config.toml"), &worktree);
+
+        assert_eq!(resolved, repo.join(".blacksmith/config.toml"));
+    }
+
+    #[test]
+    fn test_resolve_cli_config_path_preserves_explicit_override() {
+        let resolved = resolve_cli_config_path(Path::new("custom-config.toml"));
+        assert_eq!(resolved, PathBuf::from("custom-config.toml"));
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
     }
 }

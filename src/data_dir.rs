@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Manages the `.blacksmith/` directory layout.
 ///
@@ -165,9 +166,64 @@ retention = \"last-50\"
     }
 }
 
+/// Resolve `.blacksmith/...` paths against the repository root shared by git worktrees.
+///
+/// If `path` is relative and starts with `.blacksmith`, it is rebased to
+/// `<git-common-root>/.blacksmith/...` when inside a git repository.
+/// Other paths are returned unchanged.
+pub fn resolve_repo_relative_blacksmith_path(path: &Path) -> PathBuf {
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(_) => return path.to_path_buf(),
+    };
+    resolve_repo_relative_blacksmith_path_from(path, &cwd)
+}
+
+pub(crate) fn resolve_repo_relative_blacksmith_path_from(path: &Path, cwd: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let mut components = path.components();
+    let first = components.next();
+    let is_blacksmith_relative =
+        matches!(first, Some(std::path::Component::Normal(name)) if name == ".blacksmith");
+    if !is_blacksmith_relative {
+        return path.to_path_buf();
+    }
+
+    let Some(repo_root) = git_common_repo_root(cwd) else {
+        return path.to_path_buf();
+    };
+    repo_root.join(path)
+}
+
+fn git_common_repo_root(cwd: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let common_dir = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    if common_dir.as_os_str().is_empty() {
+        return None;
+    }
+
+    if common_dir.file_name().is_some_and(|n| n == ".git") {
+        return common_dir.parent().map(Path::to_path_buf);
+    }
+    Some(common_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn test_data_dir_paths() {
@@ -326,5 +382,75 @@ mod tests {
 
         let contents = std::fs::read_to_string(&gitignore).unwrap();
         assert_eq!(contents, "node_modules/\n.blacksmith/\n");
+    }
+
+    #[test]
+    fn test_resolve_repo_relative_blacksmith_path_main_and_worktree_share_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        run_git(&repo, &["init"]);
+        std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+        run_git(&repo, &["add", "README.md"]);
+        run_git(
+            &repo,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "init",
+            ],
+        );
+
+        let worktree = repo.join(".blacksmith/worktrees/worker-0-beads-test");
+        let worktree_parent = worktree.parent().unwrap();
+        std::fs::create_dir_all(worktree_parent).unwrap();
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                worktree.to_string_lossy().as_ref(),
+                "HEAD",
+            ],
+        );
+
+        let rel = Path::new(".blacksmith/blacksmith.db");
+        let main_resolved = resolve_repo_relative_blacksmith_path_from(rel, &repo);
+        let worktree_resolved = resolve_repo_relative_blacksmith_path_from(rel, &worktree);
+
+        let expected = repo.join(".blacksmith/blacksmith.db");
+        assert_eq!(main_resolved, expected);
+        assert_eq!(worktree_resolved, expected);
+    }
+
+    #[test]
+    fn test_resolve_repo_relative_blacksmith_path_keeps_non_blacksmith_relative_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init"]);
+
+        let rel = Path::new("custom-dir/blacksmith.db");
+        let resolved = resolve_repo_relative_blacksmith_path_from(rel, &repo);
+        assert_eq!(resolved, rel);
+    }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git command failed: git {}",
+            args.join(" ")
+        );
     }
 }

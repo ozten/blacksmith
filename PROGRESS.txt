@@ -1,16 +1,19 @@
-## Session: Stale worker status cleanup (simple-agent-harness-yz95)
+## Session: Shared repo-level .blacksmith resolution in worktrees (simple-agent-harness-1d04)
 
 ### Completed
-- Updated `blacksmith workers status` to self-heal stale active assignments.
-- Added filtering against current open bead IDs from `bd list --status=open --json`.
-- Added reap behavior: active DB rows for non-open beads are marked `integrated` and excluded from status output.
-- Added unit tests for bead-id JSON parsing and stale assignment reaping behavior.
-- Added `## Verify` notes to the bead with exact validation commands.
+- Added repo-shared `.blacksmith` path resolution via git common-dir detection.
+- Updated CLI config loading to rebase default `.blacksmith/config.toml` to the shared repo root when running in a worktree.
+- Updated all `DataDir` construction callsites in `main.rs` to use resolved repo-shared `.blacksmith` paths.
+- Added tests for:
+  - main checkout + worktree resolving to same `.blacksmith/blacksmith.db` location
+  - preserving explicit non-default `--config` paths
+  - preserving non-`.blacksmith` relative data paths
+- Added bead `## Verify` notes with exact commands and observed results.
 
 ### Current State
-- `workers status` now shows only assignments tied to open beads when `bd` is available.
-- Historical assignment rows are preserved (status transitioned to `integrated` rather than deleted).
-- All required quality gates passed: release tests, clippy fix, and fmt check.
+- `src/data_dir.rs` and `src/main.rs` include shared-path resolver + coverage.
+- Full release tests passed (`cargo test --release`).
+- Clippy fix ran successfully; formatting applied.
 
-### Suggested Next Task
-- Validate in a real multi-worker run that stale entries are automatically reaped from older DB state when `workers status` is invoked.
+### Suggested Next Tasks
+- Validate in an end-to-end manual run that `blacksmith improve add` from main checkout and worktree both surface in the same DB-backed listing.
