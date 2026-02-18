@@ -144,7 +144,7 @@ fn verify_deliverables(bead_id: &str, working_dir: &Path) -> Result<(), String> 
         for line in verify.lines() {
             let trimmed = line.trim().trim_start_matches('-').trim();
             if let Some(cmd) = trimmed.strip_prefix("Run:") {
-                let cmd = cmd.trim();
+                let cmd = strip_verify_prose(cmd);
                 if cmd.is_empty() {
                     continue;
                 }
@@ -226,6 +226,17 @@ fn extract_modified_file_path(line: &str) -> Option<String> {
     } else {
         Some(path.to_string())
     }
+}
+
+/// Strip trailing prose from a verify `Run:` line.
+///
+/// Agents sometimes write lines like `Run: cargo test -- --test-threads=1 — all tests pass`.
+/// The em-dash (—) and everything after it is prose, not part of the command.
+fn strip_verify_prose(cmd: &str) -> &str {
+    cmd.split('\u{2014}') // em-dash
+        .next()
+        .unwrap_or(cmd)
+        .trim()
 }
 
 /// Run the full finish protocol:
@@ -566,6 +577,29 @@ mod tests {
         let commands = vec!["exit 1".to_string(), "echo should-not-run".to_string()];
         let err = run_gate("test", &commands, dir.path()).unwrap_err();
         assert!(err.contains("test gate failed"));
+    }
+
+    #[test]
+    fn test_strip_verify_prose() {
+        // Plain command — no change
+        assert_eq!(strip_verify_prose(" cargo test --release "), "cargo test --release");
+        // Em-dash followed by prose
+        assert_eq!(
+            strip_verify_prose(" cargo test --release — all tests pass"),
+            "cargo test --release"
+        );
+        // Double-dash flags should be preserved (not em-dash)
+        assert_eq!(
+            strip_verify_prose(" cargo test -- --test-threads=1 "),
+            "cargo test -- --test-threads=1"
+        );
+        // Em-dash after double-dash flags
+        assert_eq!(
+            strip_verify_prose(" cargo test -- --test-threads=1 — should pass"),
+            "cargo test -- --test-threads=1"
+        );
+        // Empty after stripping
+        assert_eq!(strip_verify_prose(" — just prose"), "");
     }
 
     #[test]

@@ -80,6 +80,7 @@ For the selected task (e.g., bd-X):
    ```bash
    bd update bd-X --notes="## Verify\n- Run: <command you used to test>\n- Expect: <what you observed>"
    ```
+   **Format rules for ## Verify:** Each `Run:` line must contain ONLY the shell command — no prose, no expected output, no comments after the command. Put expectations on a separate `Expect:` line.
 
    **4b. Code quality gates:**
    ```bash
