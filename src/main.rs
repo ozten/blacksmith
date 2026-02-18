@@ -1872,6 +1872,52 @@ mod tests {
     }
 
     #[test]
+    fn test_improve_commands_share_db_between_main_and_worktree() {
+        let (_dir, repo, worktree) = init_repo_with_worktree();
+        let config = Path::new(".blacksmith/config.toml");
+        let storage = Path::new(".blacksmith");
+
+        let main_dd =
+            data_dir::DataDir::new(resolve_storage_data_dir_for_cwd(storage, config, &repo));
+        let worktree_dd =
+            data_dir::DataDir::new(resolve_storage_data_dir_for_cwd(storage, config, &worktree));
+        main_dd.ensure_initialized().unwrap();
+
+        improve::handle_add(
+            &main_dd.db(),
+            "shared-from-main",
+            "workflow",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        improve::handle_add(
+            &worktree_dd.db(),
+            "shared-from-worktree",
+            "workflow",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let conn_main = db::open_or_create(&main_dd.db()).unwrap();
+        let main_items = db::list_improvements(&conn_main, None, None).unwrap();
+        assert_eq!(main_items.len(), 2);
+        assert_eq!(main_items[0].title, "shared-from-main");
+        assert_eq!(main_items[1].title, "shared-from-worktree");
+        let main_r2 = db::get_improvement(&conn_main, "R2").unwrap().unwrap();
+        assert_eq!(main_r2.title, "shared-from-worktree");
+
+        let conn_worktree = db::open_or_create(&worktree_dd.db()).unwrap();
+        let worktree_items = db::list_improvements(&conn_worktree, None, None).unwrap();
+        assert_eq!(worktree_items.len(), 2);
+        let worktree_r1 = db::get_improvement(&conn_worktree, "R1").unwrap().unwrap();
+        assert_eq!(worktree_r1.title, "shared-from-main");
+    }
+
+    #[test]
     fn test_workers_status_empty() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
