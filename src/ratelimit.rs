@@ -1,12 +1,11 @@
-/// Rate limit detection: inspect the final result event in session JSONL output.
+/// Rate limit and quota exhaustion detection for agent session JSONL output.
 ///
-/// Only the last `"type":"result"` event is inspected. A successful session
-/// (`is_error: false`, `subtype: "success"`) is never classified as rate-limited,
-/// regardless of what text the agent may have read during the session.
+/// Supports two JSONL formats:
+/// - **Claude**: last `"type":"result"` event with `is_error`/`subtype` fields
+/// - **Codex**: `"type":"error"` or `"type":"turn.failed"` events with `message`/`error.message`
 ///
-/// Rate limit patterns checked (only within error result events):
-/// - JSON: `"error":"rate_limit"` or `"error": "rate_limit"`
-/// - Text: `rate limit`, `rate_limit`, `usage limit`, `hit your limit` (case-insensitive)
+/// Rate limit patterns: `rate limit`, `rate_limit`, `usage limit`, `hit your limit`
+/// Quota patterns: `usage limit`, `hit your limit`, `purchase more credits`, `upgrade to`
 use regex::Regex;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -20,10 +19,20 @@ static RATE_LIMIT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     ]
 });
 
-/// Inspect the final result event in a JSONL file for rate limit indicators.
+/// Patterns that indicate hard quota exhaustion (not a transient rate limit).
+static QUOTA_EXHAUSTION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    vec![
+        Regex::new(r"(?i)usage limit").unwrap(),
+        Regex::new(r"(?i)hit your (?:usage )?limit").unwrap(),
+        Regex::new(r"(?i)purchase more credits").unwrap(),
+        Regex::new(r"(?i)upgrade to (?:pro|plus|team)").unwrap(),
+    ]
+});
+
+/// Inspect a JSONL file for rate limit indicators.
 ///
-/// Returns `true` only if the session ended with an error that contains
-/// rate limit patterns. Successful sessions are never classified as rate-limited.
+/// Returns `true` if the session ended with a rate limit error.
+/// Supports both Claude (`"type":"result"`) and Codex (`"type":"error"`) formats.
 pub fn detect_rate_limit(output_path: &Path) -> bool {
     let contents = match std::fs::read_to_string(output_path) {
         Ok(c) => c,
@@ -37,17 +46,77 @@ pub fn detect_rate_limit(output_path: &Path) -> bool {
         }
     };
 
-    detect_rate_limit_in_result_event(&contents)
+    detect_rate_limit_in_content(&contents)
+}
+
+/// Inspect a JSONL file for hard quota exhaustion.
+///
+/// Returns `Some(message)` with the quota error message if detected,
+/// `None` if the session didn't fail due to quota.
+pub fn detect_quota_exhaustion(output_path: &Path) -> Option<String> {
+    let contents = match std::fs::read_to_string(output_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %output_path.display(),
+                "failed to read output file for quota check"
+            );
+            return None;
+        }
+    };
+
+    detect_quota_in_content(&contents)
+}
+
+/// Detect rate limiting in JSONL content (any format).
+fn detect_rate_limit_in_content(jsonl_content: &str) -> bool {
+    // Try Claude format first
+    if detect_rate_limit_in_result_event(jsonl_content) {
+        return true;
+    }
+    // Try Codex/generic format: look for error events
+    detect_rate_limit_in_error_events(jsonl_content)
+}
+
+/// Detect quota exhaustion in JSONL content (any format).
+/// Returns the error message if quota exhaustion is detected.
+fn detect_quota_in_content(jsonl_content: &str) -> Option<String> {
+    // Scan all lines for error events with quota patterns
+    for line in jsonl_content.lines().rev() {
+        // Claude format: "type":"result" with is_error
+        if line.contains("\"type\":\"result\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                let is_error = parsed["is_error"].as_bool().unwrap_or(false);
+                let subtype = parsed["subtype"].as_str().unwrap_or("");
+                if is_error || subtype == "error" {
+                    let text = parsed["result"].as_str().unwrap_or("");
+                    if matches_quota_patterns(text) {
+                        return Some(text.to_string());
+                    }
+                }
+            }
+        }
+        // Codex format: "type":"error" or "type":"turn.failed"
+        if line.contains("\"type\":\"error\"") || line.contains("\"type\":\"turn.failed\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                // Check "message" field (type:error) or "error.message" (type:turn.failed)
+                let msg = parsed["message"]
+                    .as_str()
+                    .or_else(|| parsed["error"]["message"].as_str())
+                    .unwrap_or("");
+                if matches_quota_patterns(msg) {
+                    return Some(msg.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Find the last `"type":"result"` line in JSONL content and check for rate limiting.
-///
-/// Returns `false` if:
-/// - No result event is found
-/// - The result event has `is_error: false` (successful session)
-/// - The result event is an error but contains no rate limit patterns
+/// (Claude format)
 fn detect_rate_limit_in_result_event(jsonl_content: &str) -> bool {
-    // Find the last line containing "type":"result"
     let result_line = jsonl_content
         .lines()
         .rev()
@@ -55,47 +124,51 @@ fn detect_rate_limit_in_result_event(jsonl_content: &str) -> bool {
 
     let result_line = match result_line {
         Some(line) => line,
-        None => {
-            tracing::debug!("no result event found in output, not rate-limited");
-            return false;
-        }
+        None => return false,
     };
 
-    // Parse the result event as JSON
     let parsed: serde_json::Value = match serde_json::from_str(result_line) {
         Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to parse result event JSON");
-            return false;
-        }
+        Err(_) => return false,
     };
 
-    // A successful session is never rate-limited
     let is_error = parsed["is_error"].as_bool().unwrap_or(false);
     let subtype = parsed["subtype"].as_str().unwrap_or("");
 
     if !is_error && subtype != "error" {
-        tracing::debug!(
-            is_error,
-            subtype,
-            "successful session result, not rate-limited"
-        );
         return false;
     }
 
-    // Session ended with an error — check if it's rate-limit related
     detect_rate_limit_in_text(result_line)
+}
+
+/// Check for rate limiting in Codex-format error events.
+/// Looks for "type":"error" and "type":"turn.failed" events.
+fn detect_rate_limit_in_error_events(jsonl_content: &str) -> bool {
+    for line in jsonl_content.lines().rev() {
+        if line.contains("\"type\":\"error\"") || line.contains("\"type\":\"turn.failed\"") {
+            if detect_rate_limit_in_text(line) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Check text content for rate limit patterns.
 fn detect_rate_limit_in_text(text: &str) -> bool {
     for pattern in RATE_LIMIT_PATTERNS.iter() {
         if pattern.is_match(text) {
-            tracing::debug!(pattern = %pattern, "rate limit pattern matched in result event");
+            tracing::debug!(pattern = %pattern, "rate limit pattern matched");
             return true;
         }
     }
     false
+}
+
+/// Check text for quota exhaustion patterns.
+fn matches_quota_patterns(text: &str) -> bool {
+    QUOTA_EXHAUSTION_PATTERNS.iter().any(|p| p.is_match(text))
 }
 
 /// Calculate exponential backoff delay for rate limiting.
@@ -286,6 +359,84 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nonexistent.jsonl");
         assert!(!detect_rate_limit(&path));
+    }
+
+    // --- Codex format tests ---
+
+    #[test]
+    fn test_codex_error_event_with_usage_limit() {
+        let jsonl = r#"{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.started"}
+{"type":"error","message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 10:15 PM."}"#;
+        assert!(detect_rate_limit_in_content(jsonl));
+    }
+
+    #[test]
+    fn test_codex_turn_failed_with_usage_limit() {
+        let jsonl = r#"{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro."}}"#;
+        assert!(detect_rate_limit_in_content(jsonl));
+    }
+
+    #[test]
+    fn test_codex_error_event_without_rate_limit() {
+        let jsonl = r#"{"type":"error","message":"Internal server error"}"#;
+        assert!(!detect_rate_limit_in_content(jsonl));
+    }
+
+    // --- Quota exhaustion tests ---
+
+    #[test]
+    fn test_codex_quota_exhaustion_detected() {
+        let jsonl = r#"{"type":"error","message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 10:15 PM."}"#;
+        let result = detect_quota_in_content(jsonl);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("hit your usage limit"));
+    }
+
+    #[test]
+    fn test_codex_quota_purchase_credits() {
+        let jsonl = r#"{"type":"error","message":"Please purchase more credits to continue."}"#;
+        assert!(detect_quota_in_content(jsonl).is_some());
+    }
+
+    #[test]
+    fn test_codex_quota_upgrade_to_pro() {
+        let jsonl = r#"{"type":"turn.failed","error":{"message":"Upgrade to Pro to continue using this model."}}"#;
+        assert!(detect_quota_in_content(jsonl).is_some());
+    }
+
+    #[test]
+    fn test_claude_quota_exhaustion_detected() {
+        let jsonl = result_event(true, "error", "You've hit your usage limit for this billing period.");
+        assert!(detect_quota_in_content(&jsonl).is_some());
+    }
+
+    #[test]
+    fn test_transient_rate_limit_not_quota() {
+        // A plain "rate limit" is not quota exhaustion
+        let jsonl = r#"{"type":"error","message":"rate limit exceeded, please retry"}"#;
+        assert!(detect_quota_in_content(jsonl).is_none());
+    }
+
+    #[test]
+    fn test_quota_from_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("output.jsonl");
+        let content = r#"{"type":"thread.started","thread_id":"abc"}
+{"type":"turn.started"}
+{"type":"error","message":"You've hit your usage limit. Upgrade to Pro."}"#;
+        std::fs::write(&path, content).unwrap();
+        assert!(detect_quota_exhaustion(&path).is_some());
+    }
+
+    #[test]
+    fn test_no_quota_from_normal_failure() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("output.jsonl");
+        std::fs::write(&path, r#"{"type":"error","message":"compilation failed"}"#).unwrap();
+        assert!(detect_quota_exhaustion(&path).is_none());
     }
 
     // --- Backoff tests (unchanged) ---

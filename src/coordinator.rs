@@ -16,6 +16,7 @@ use crate::ingest;
 use crate::integrator::{close_bead_in_bd, CircuitBreaker, IntegrationQueue, TrippedFailure};
 use crate::pool::{PoolError, SessionOutcome, WorkerPool};
 use crate::prompt;
+use crate::ratelimit;
 use crate::scheduler::{self, InProgressAssignment, ReadyBead};
 use crate::signals::SignalHandler;
 use crate::status::{HarnessState, StatusTracker};
@@ -48,6 +49,8 @@ pub enum CoordinatorExitReason {
     StopFile,
     /// SIGINT or SIGTERM received.
     Signal,
+    /// Agent quota exhausted (not a transient rate limit).
+    QuotaExhausted(String),
     /// Fatal error (e.g., database failure).
     Error(String),
 }
@@ -118,8 +121,10 @@ pub async fn run(
     let mut completed_beads = 0u32;
     let mut failed_beads = 0u32;
     let mut consecutive_no_work = 0u32;
+    let mut consecutive_quota_failures = 0u32;
     let mut previous_dependency_filter_counts: Option<(usize, usize)> = None;
     const MAX_CONSECUTIVE_NO_WORK: u32 = 3;
+    const MAX_CONSECUTIVE_QUOTA_FAILURES: u32 = 2;
 
     // StatusTracker: write state transitions so `--status` works
     let status_path = data_dir.status();
@@ -230,6 +235,19 @@ pub async fn run(
                     &db_conn,
                     config.workers.max,
                 );
+                // Check for quota exhaustion (hard limit, not transient rate limit)
+                if let Some(quota_msg) = ratelimit::detect_quota_exhaustion(&outcome.output_file) {
+                    consecutive_quota_failures += 1;
+                    tracing::error!(
+                        worker_id = outcome.worker_id,
+                        consecutive = consecutive_quota_failures,
+                        "agent quota exhausted: {quota_msg}"
+                    );
+                } else {
+                    // Non-quota failure resets the counter
+                    consecutive_quota_failures = 0;
+                }
+
                 tracing::warn!(
                     worker_id = outcome.worker_id,
                     exit_code = ?outcome.exit_code,
@@ -240,6 +258,29 @@ pub async fn run(
                     tracing::warn!(error = %e, worker_id = outcome.worker_id, "failed to reset worker");
                 }
             }
+        }
+
+        // Exit if agent quota is exhausted
+        if consecutive_quota_failures >= MAX_CONSECUTIVE_QUOTA_FAILURES {
+            let agent_cmd = &config.agent.command;
+            eprintln!();
+            eprintln!("ERROR: Agent quota exhausted — all recent workers failed with a usage limit error.");
+            eprintln!("       The {} agent has hit its plan/credit limit.", agent_cmd);
+            eprintln!();
+            eprintln!("  To resume, either:");
+            eprintln!("    1. Wait for your quota to reset");
+            eprintln!("    2. Upgrade your plan at the provider");
+            eprintln!(
+                "    3. Switch to a different agent in .blacksmith/config.toml: [agent] command = \"...\""
+            );
+            eprintln!();
+            status.update(HarnessState::ShuttingDown);
+            status.remove();
+            return CoordinatorSummary {
+                completed_beads,
+                failed_beads,
+                exit_reason: CoordinatorExitReason::QuotaExhausted(agent_cmd.clone()),
+            };
         }
 
         // Integration: process one completed worker at a time (sequential)
@@ -1187,14 +1228,24 @@ fn parse_and_filter_beads(json_str: &str) -> BeadQuery {
 
     // --- Epic child filtering ---
     // Exclude epics that still have open children.
+    //
+    // Build a set of epic IDs that have at least one open child.
+    // In bd's JSON, a child bead has a "parent-child" dependency whose
+    // `depends_on_id` is the *parent* epic.  So we scan all open beads and
+    // reverse the relationship.
+    let mut epics_with_open_children: HashSet<String> = HashSet::new();
+    for rb in &after_cycle {
+        for parent_id in &rb.parent_child_ids {
+            epics_with_open_children.insert(parent_id.clone());
+        }
+    }
+
     let before_epic_count = after_cycle.len();
     let after_epic: Vec<ReadyBead> = after_cycle
         .into_iter()
         .filter(|b| {
             if b.issue_type.eq_ignore_ascii_case("epic") {
-                !b.parent_child_ids
-                    .iter()
-                    .any(|child_id| open_ids_all.contains(child_id))
+                !epics_with_open_children.contains(&b.id)
             } else {
                 true
             }
