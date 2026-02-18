@@ -8,7 +8,13 @@ A supervised agent harness that runs AI coding agents in a loop — dispatching 
 ## Install
 
 ```bash
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/ozten/blacksmith/main/scripts/install.sh | bash
+```
+
+To install a specific version:
+
+```bash
+BLACKSMITH_VERSION=0.1.0 curl -fsSL https://raw.githubusercontent.com/ozten/blacksmith/main/scripts/install.sh | bash
 ```
 
 ## Quick Start
@@ -60,8 +66,12 @@ Design specifications in [`prd/`](prd/):
 - [V3.5: Deployment Model](prd/SPEC-v4-deploy-self-improvement.md)
 - [V5: Architecture Analysis](prd/SPEC-v5-automated-architecture-and-metadata.md)
 
-## Testing
+## Development
 
 ```bash
+# Build from source
+cargo build --release
+
+# Run tests
 cargo test
 ```
