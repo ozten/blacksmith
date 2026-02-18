@@ -118,6 +118,13 @@ pub struct ReadyBead {
     /// Priority (lower number = higher priority; 0 = critical, 4 = backlog).
     #[allow(dead_code)]
     pub priority: u32,
+    /// Issue type from bd ("task", "epic", ...).
+    #[allow(dead_code)]
+    pub issue_type: String,
+    /// Child IDs from parent-child dependencies (used to keep epics out of worker pool
+    /// while children are still open).
+    #[allow(dead_code)]
+    pub parent_child_ids: Vec<String>,
     /// Parsed affected globs from the bead's design field.
     /// `None` means the bead didn't declare an affected set (treats as "everything").
     pub affected_globs: Option<Vec<String>>,
@@ -431,6 +438,8 @@ mod tests {
         ReadyBead {
             id: id.to_string(),
             priority,
+            issue_type: "task".to_string(),
+            parent_child_ids: Vec::new(),
             affected_globs: globs.map(|g| g.into_iter().map(|s| s.to_string()).collect()),
         }
     }

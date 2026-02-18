@@ -904,6 +904,7 @@ fn query_ready_beads() -> BeadQuery {
 /// Parse JSON bead data, detect cycles, filter out cycled beads, and return schedulable beads.
 fn parse_and_filter_beads(json_str: &str) -> BeadQuery {
     let (ready_beads, bead_nodes) = parse_ready_beads_json(json_str);
+    let open_ids_all: HashSet<String> = ready_beads.iter().map(|b| b.id.clone()).collect();
 
     // Run cycle detection on the dependency graph
     let cycles = cycle_detect::detect_cycles(&bead_nodes);
@@ -943,16 +944,40 @@ fn parse_and_filter_beads(json_str: &str) -> BeadQuery {
         after_cycle = ready_beads;
     }
 
+    // --- Epic child filtering ---
+    // Exclude epics that still have open children.
+    let before_epic_count = after_cycle.len();
+    let after_epic: Vec<ReadyBead> = after_cycle
+        .into_iter()
+        .filter(|b| {
+            if b.issue_type.eq_ignore_ascii_case("epic") {
+                !b.parent_child_ids
+                    .iter()
+                    .any(|child_id| open_ids_all.contains(child_id))
+            } else {
+                true
+            }
+        })
+        .collect();
+    let epic_filtered_count = before_epic_count - after_epic.len();
+    if epic_filtered_count > 0 {
+        tracing::info!(
+            filtered = epic_filtered_count,
+            remaining = after_epic.len(),
+            "filtered out {epic_filtered_count} epics with open children"
+        );
+    }
+
     // --- Dependency filtering ---
     // A bead is truly ready only if none of its depends_on IDs are still open.
-    let open_ids: HashSet<String> = after_cycle.iter().map(|b| b.id.clone()).collect();
+    let open_ids: HashSet<String> = after_epic.iter().map(|b| b.id.clone()).collect();
     let deps_map: std::collections::HashMap<&str, &[String]> = bead_nodes
         .iter()
         .map(|n| (n.id.as_str(), n.depends_on.as_slice()))
         .collect();
 
-    let before_dep_count = after_cycle.len();
-    let truly_ready: Vec<ReadyBead> = after_cycle
+    let before_dep_count = after_epic.len();
+    let truly_ready: Vec<ReadyBead> = after_epic
         .into_iter()
         .filter(|b| {
             deps_map
@@ -1004,27 +1029,47 @@ fn parse_ready_beads_json(json_str: &str) -> (Vec<ReadyBead>, Vec<BeadNode>) {
                     None => continue,
                 };
                 let priority = b.get("priority").and_then(|p| p.as_u64()).unwrap_or(2) as u32;
+                let issue_type = b
+                    .get("issue_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("task")
+                    .to_string();
                 let design = b.get("design").and_then(|d| d.as_str()).unwrap_or("");
                 let affected_globs = scheduler::parse_affected_set(design);
 
                 // Parse dependencies for cycle detection
-                let depends_on: Vec<String> = b
+                let dependencies = b
                     .get("dependencies")
                     .and_then(|d| d.as_array())
-                    .map(|deps| {
-                        deps.iter()
-                            .filter_map(|dep| {
-                                dep.get("depends_on_id")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string())
-                            })
-                            .collect()
-                    })
+                    .cloned()
                     .unwrap_or_default();
+                let depends_on: Vec<String> = dependencies
+                    .iter()
+                    .filter_map(|dep| {
+                        dep.get("depends_on_id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .collect();
+                let parent_child_ids: Vec<String> = dependencies
+                    .iter()
+                    .filter_map(|dep| {
+                        let dep_type = dep.get("type").and_then(|v| v.as_str())?;
+                        if dep_type.eq_ignore_ascii_case("parent-child") {
+                            dep.get("depends_on_id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
                 ready.push(ReadyBead {
                     id: id.clone(),
                     priority,
+                    issue_type,
+                    parent_child_ids,
                     affected_globs,
                 });
 
@@ -1365,19 +1410,23 @@ mod tests {
     #[test]
     fn test_parse_ready_beads_json_valid() {
         let json = r#"[
-            {"id": "beads-abc", "priority": 1, "design": "affected: src/db.rs"},
-            {"id": "beads-def", "priority": 2, "design": "Some description\naffected: tests/**"}
+            {"id": "beads-abc", "issue_type": "epic", "priority": 1, "design": "affected: src/db.rs", "dependencies": [{"depends_on_id": "beads-child", "type": "parent-child"}]},
+            {"id": "beads-def", "issue_type": "task", "priority": 2, "design": "Some description\naffected: tests/**"}
         ]"#;
         let (beads, nodes) = parse_ready_beads_json(json);
         assert_eq!(beads.len(), 2);
         assert_eq!(beads[0].id, "beads-abc");
+        assert_eq!(beads[0].issue_type, "epic");
+        assert_eq!(beads[0].parent_child_ids, vec!["beads-child"]);
         assert_eq!(beads[0].priority, 1);
         assert_eq!(beads[0].affected_globs, Some(vec!["src/db.rs".to_string()]));
         assert_eq!(beads[1].id, "beads-def");
+        assert_eq!(beads[1].issue_type, "task");
+        assert!(beads[1].parent_child_ids.is_empty());
         assert_eq!(beads[1].priority, 2);
         assert_eq!(beads[1].affected_globs, Some(vec!["tests/**".to_string()]));
         assert_eq!(nodes.len(), 2);
-        assert!(nodes[0].depends_on.is_empty());
+        assert_eq!(nodes[0].depends_on, vec!["beads-child"]);
         assert!(nodes[1].depends_on.is_empty());
     }
 
@@ -1499,6 +1548,29 @@ mod tests {
         assert_eq!(result.ready[0].id, "c");
         assert_eq!(result.cycles.len(), 1);
         assert_eq!(result.cycles[0], vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_parse_and_filter_beads_filters_epic_with_open_child() {
+        let json = r#"[
+            {"id": "epic-1", "issue_type": "epic", "priority": 1, "dependencies": [{"depends_on_id": "task-1", "type": "parent-child"}]},
+            {"id": "task-1", "issue_type": "task", "priority": 2, "dependencies": []}
+        ]"#;
+        let result = parse_and_filter_beads(json);
+        assert_eq!(result.ready.len(), 1);
+        assert_eq!(result.ready[0].id, "task-1");
+    }
+
+    #[test]
+    fn test_parse_and_filter_beads_keeps_epic_without_open_children() {
+        let json = r#"[
+            {"id": "epic-1", "issue_type": "epic", "priority": 1, "dependencies": [{"depends_on_id": "task-closed", "type": "parent-child"}]},
+            {"id": "task-1", "issue_type": "task", "priority": 2, "dependencies": []}
+        ]"#;
+        let result = parse_and_filter_beads(json);
+        assert_eq!(result.ready.len(), 2);
+        assert!(result.ready.iter().any(|b| b.id == "epic-1"));
+        assert!(result.ready.iter().any(|b| b.id == "task-1"));
     }
 
     #[test]
