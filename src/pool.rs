@@ -211,7 +211,18 @@ impl WorkerPool {
             .collect()
     }
 
+    /// Returns true when there is exactly one worker slot (single-agent mode).
+    ///
+    /// In single-agent mode the worker runs directly in the repo directory
+    /// instead of a git worktree, and integration is skipped.
+    pub fn is_single_agent(&self) -> bool {
+        self.workers.len() == 1
+    }
+
     /// Assign a bead to the next idle worker, creating a worktree and spawning the agent.
+    ///
+    /// When `is_single_agent()` is true, the worker runs directly in the repo
+    /// directory and no worktree is created.
     ///
     /// Returns the worker_id and assignment_id on success.
     pub async fn spawn_worker(
@@ -232,14 +243,18 @@ impl WorkerPool {
 
         let worker_id = self.workers[worker_idx].id;
 
-        // Create worktree
-        let wt_path = worktree::create(
-            &self.repo_dir,
-            &self.worktrees_dir,
-            worker_id,
-            bead_id,
-            &self.base_branch,
-        )?;
+        // In single-agent mode, skip worktree creation and use repo_dir directly
+        let wt_path = if self.is_single_agent() {
+            self.repo_dir.clone()
+        } else {
+            worktree::create(
+                &self.repo_dir,
+                &self.worktrees_dir,
+                worker_id,
+                bead_id,
+                &self.base_branch,
+            )?
+        };
 
         // Insert assignment into DB with the bead's declared affected set
         let assignment_id = db::insert_worker_assignment(
@@ -257,7 +272,7 @@ impl WorkerPool {
         self.next_session_id += 1;
         let output_file = output_dir.join(format!("{}.jsonl", session_id));
 
-        // Spawn the agent process in the worktree
+        // Spawn the agent process in the working directory
         let handle = spawn_agent_in_worktree(
             worker_id,
             agent_config,
@@ -410,6 +425,7 @@ impl WorkerPool {
 
     /// Reset a worker back to idle, cleaning up its worktree.
     pub fn reset_worker(&mut self, worker_id: u32) -> Result<(), PoolError> {
+        let single_agent = self.is_single_agent();
         let worker = self
             .workers
             .get_mut(worker_id as usize)
@@ -421,14 +437,16 @@ impl WorkerPool {
             )));
         }
 
-        // Clean up worktree
-        if let Some(ref wt_path) = worker.worktree_path {
-            if let Err(e) = worktree::remove(&self.repo_dir, wt_path) {
-                tracing::warn!(
-                    worker_id,
-                    error = %e,
-                    "failed to remove worktree during reset"
-                );
+        // Clean up worktree (skip in single-agent mode — worker used repo dir directly)
+        if !single_agent {
+            if let Some(ref wt_path) = worker.worktree_path {
+                if let Err(e) = worktree::remove(&self.repo_dir, wt_path) {
+                    tracing::warn!(
+                        worker_id,
+                        error = %e,
+                        "failed to remove worktree during reset"
+                    );
+                }
             }
         }
 
@@ -969,6 +987,75 @@ mod tests {
                 "found worker-prefixed file: {name}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_spawn_worker_single_agent_no_worktree() {
+        let dir = init_test_repo();
+        let wt_dir = dir.path().join("worktrees");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+        let output_dir = dir.path().join("output");
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        // Single worker = single-agent mode
+        let workers_config = test_workers_config(1);
+        let mut pool =
+            WorkerPool::new(&workers_config, dir.path().to_path_buf(), wt_dir.clone(), 0);
+
+        assert!(pool.is_single_agent());
+
+        let db_path = dir.path().join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+        let agent = test_agent_config();
+
+        let (worker_id, _assignment_id) = pool
+            .spawn_worker(
+                "beads-single",
+                None,
+                &agent,
+                "test prompt",
+                &output_dir,
+                &conn,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(worker_id, 0);
+
+        // Worktree path should be the repo dir, not a subdirectory of worktrees/
+        let worker_wt = pool.worker_worktree_path(0).unwrap();
+        assert_eq!(worker_wt, dir.path());
+        assert!(!worker_wt.starts_with(&wt_dir));
+
+        // No worktree directories should have been created
+        let wt_entries: Vec<_> = std::fs::read_dir(&wt_dir).unwrap().flatten().collect();
+        assert!(
+            wt_entries.is_empty(),
+            "no worktrees should be created in single-agent mode"
+        );
+
+        // Wait for completion and verify reset works without worktree removal
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let outcomes = pool.poll_completed().await;
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].exit_code, Some(0));
+
+        pool.reset_worker(0).unwrap();
+        assert_eq!(pool.idle_count(), 1);
+    }
+
+    #[test]
+    fn test_is_single_agent() {
+        let dir = init_test_repo();
+        let wt_dir = dir.path().join("worktrees");
+
+        let config1 = test_workers_config(1);
+        let pool1 = WorkerPool::new(&config1, dir.path().to_path_buf(), wt_dir.clone(), 0);
+        assert!(pool1.is_single_agent());
+
+        let config2 = test_workers_config(2);
+        let pool2 = WorkerPool::new(&config2, dir.path().to_path_buf(), wt_dir, 0);
+        assert!(!pool2.is_single_agent());
     }
 
     #[test]

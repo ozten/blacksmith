@@ -3394,3 +3394,27 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Tasks
 - Next ready beads from the queue
+
+--- 2026-02-18 01:49:15 | simple-agent-harness-458j ---
+## Session: Skip worktree and integration for workers.max=1 (simple-agent-harness-458j)
+
+### Completed
+- Added `is_single_agent()` method to `WorkerPool` — returns true when max workers = 1
+- Modified `spawn_worker()` to skip `worktree::create()` when single-agent, using `repo_dir` directly
+- Modified `reset_worker()` to skip `worktree::remove()` when single-agent
+- Added `close_bead_direct()` helper in coordinator that runs `bd close` + `bd sync` without merge
+- Modified coordinator integration path to skip `integration_queue.integrate()` when single-agent, calling `close_bead_direct()` instead
+- Added 4 tests: `test_spawn_worker_single_agent_no_worktree`, `test_is_single_agent`, `test_close_bead_direct_does_not_panic`, `test_coordinator_single_agent_direct_commit`
+
+### Files Changed
+- src/pool.rs (modified — added is_single_agent(), skip worktree create/remove for max=1)
+- src/coordinator.rs (modified — added close_bead_direct(), skip integration merge for max=1)
+
+### Current State
+- All 1135 tests pass (1 ignored)
+- Clippy clean (only pre-existing dead_code warning for preflight::fatals())
+- Fmt clean
+
+### Suggested Next Tasks
+- Next ready beads: simple-agent-harness-ukxz, simple-agent-harness-6ugm
+- Downstream bead simple-agent-harness-2dln (Route workers.max=1 through coordinator) is now unblocked
