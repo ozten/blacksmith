@@ -582,7 +582,10 @@ mod tests {
     #[test]
     fn test_strip_verify_prose() {
         // Plain command — no change
-        assert_eq!(strip_verify_prose(" cargo test --release "), "cargo test --release");
+        assert_eq!(
+            strip_verify_prose(" cargo test --release "),
+            "cargo test --release"
+        );
         // Em-dash followed by prose
         assert_eq!(
             strip_verify_prose(" cargo test --release — all tests pass"),

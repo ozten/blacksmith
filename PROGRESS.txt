@@ -1,19 +1,16 @@
-## Session: Add persistent coordinator loop config option (simple-agent-harness-9hip)
+## Session: Make command_in_path pub(crate) (simple-agent-harness-8l0p)
 
 ### Completed
-- Added `persistent: bool` field to `WorkersConfig` in config.rs (default: `false`)
-- Updated coordinator.rs: when `persistent = true`, coordinator skips the NoWork exit and logs "sleeping before re-poll" instead
-- When `persistent = false` (default), existing behavior is unchanged — exits after 3 no-work cycles
-- Updated all test WorkersConfig struct literals (8 occurrences across coordinator.rs and pool.rs)
+- Changed `fn command_in_path` to `pub(crate) fn command_in_path` in src/config.rs
+- This makes the function available to other modules (e.g., the upcoming preflight module)
 
 ### Files Changed
-- src/config.rs (added `persistent` field to WorkersConfig struct and Default impl)
-- src/coordinator.rs (conditional exit logic + test struct updates)
-- src/pool.rs (test struct update)
+- src/config.rs (visibility change on command_in_path)
+- src/finish.rs (cargo fmt auto-fix for pre-existing formatting issue)
 
 ### Current State
-- All 1116 tests pass
+- All 1117 tests pass
 - Zero clippy warnings, formatting clean
 
 ### Suggested Next Tasks
-- Pick up next P1 tasks: simple-agent-harness-ar6v, simple-agent-harness-dwng, simple-agent-harness-8l0p
+- Pick up unblocked tasks: simple-agent-harness-6in9 (preflight check module), simple-agent-harness-dpmv (agent detection/init)

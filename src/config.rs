@@ -1015,7 +1015,7 @@ impl HarnessConfig {
 }
 
 /// Check if a command name exists on the system PATH.
-fn command_in_path(cmd: &str) -> bool {
+pub(crate) fn command_in_path(cmd: &str) -> bool {
     if let Some(path_var) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let full = dir.join(cmd);
