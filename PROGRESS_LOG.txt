@@ -3318,3 +3318,28 @@ Implemented three features for the self-improvement feedback loop:
 ### Suggested Next Tasks
 - simple-agent-harness-dpmv (agent detection and project-aware config generation for init) — now unblocked
 - simple-agent-harness-6in9 (preflight check module)
+
+--- 2026-02-18 01:05:23 | simple-agent-harness-dpmv ---
+## Session: Agent detection and project-aware config generation (simple-agent-harness-dpmv)
+
+### Completed
+- Added `AgentProfile` struct and `agent_profiles()` returning 4 profiles (claude, codex, opencode, aider) with canonical args from docs/adapters.md
+- Added `detect_agent()` using `command_in_path` to find first available agent on PATH
+- Added `generate_config_toml()` producing complete config.toml with [agent], [session], [storage], [workers], and [quality_gates] sections, project-type-aware
+- Updated init handler in main.rs: detects agent, generates project-aware config, uses `init_with_config()` instead of `ensure_initialized()`
+- Made `DataDir::update_gitignore()` public so init handler can call it separately
+- Updated `guidance_message()` to accept and display agent info
+- Added 5 new tests: unique profile names, Rust+Claude config, Node+Claude config, unknown project config, aider config
+
+### Files Changed
+- src/init.rs (modified — AgentProfile, detect_agent, generate_config_toml, updated guidance_message + tests)
+- src/main.rs (modified — init handler rewritten to use new flow)
+- src/data_dir.rs (modified — made update_gitignore public)
+
+### Current State
+- All 1123 tests pass
+- Clippy clean, fmt clean
+
+### Suggested Next Tasks
+- simple-agent-harness-6in9 (preflight check module)
+- simple-agent-harness-7vta (wire preflight into CLI, init, and harness startup) — unblocked after 6in9

@@ -2,6 +2,143 @@ use std::io::BufRead;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::config::command_in_path;
+
+/// Profile for a supported AI coding agent.
+#[derive(Debug, Clone)]
+pub struct AgentProfile {
+    pub name: &'static str,
+    pub command: &'static str,
+    pub args: Vec<String>,
+    pub prompt_via: &'static str, // "arg", "stdin", or "file"
+}
+
+/// Return all known agent profiles in priority order.
+pub fn agent_profiles() -> Vec<AgentProfile> {
+    vec![
+        AgentProfile {
+            name: "claude",
+            command: "claude",
+            args: vec![
+                "-p".into(),
+                "{prompt}".into(),
+                "--verbose".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+            ],
+            prompt_via: "arg",
+        },
+        AgentProfile {
+            name: "codex",
+            command: "codex",
+            args: vec![
+                "exec".into(),
+                "--json".into(),
+                "--full-auto".into(),
+                "{prompt}".into(),
+            ],
+            prompt_via: "arg",
+        },
+        AgentProfile {
+            name: "opencode",
+            command: "opencode",
+            args: vec!["run".into(), "{prompt}".into()],
+            prompt_via: "arg",
+        },
+        AgentProfile {
+            name: "aider",
+            command: "aider",
+            args: vec![
+                "--message-file".into(),
+                "{prompt_file}".into(),
+                "--yes-always".into(),
+                "--no-auto-commits".into(),
+            ],
+            prompt_via: "file",
+        },
+    ]
+}
+
+/// Detect the first available agent on PATH, in priority order.
+/// Returns `None` if no known agent is found.
+pub fn detect_agent() -> Option<AgentProfile> {
+    agent_profiles()
+        .into_iter()
+        .find(|p| command_in_path(p.command))
+}
+
+/// Generate a complete config.toml string for the given project type and agent.
+pub fn generate_config_toml(
+    project_type: &ProjectType,
+    agent: &AgentProfile,
+    _commands: &[DetectedCommand],
+) -> String {
+    let args_toml: Vec<String> = agent.args.iter().map(|a| format!("\"{a}\"")).collect();
+    let args_str = args_toml.join(", ");
+
+    let (check, test, lint, format) = match project_type {
+        ProjectType::Rust => (
+            "\"cargo check --release\"",
+            "\"cargo test --release\"",
+            "\"cargo clippy --fix --allow-dirty\"",
+            "\"cargo fmt --check\"",
+        ),
+        ProjectType::Node => (
+            "\"npm run build\"",
+            "\"npm test\"",
+            "\"npm run lint\"",
+            "[]",
+        ),
+        ProjectType::Python => (
+            "[]",
+            "\"pytest\"",
+            "\"ruff check .\"",
+            "\"ruff format --check .\"",
+        ),
+        ProjectType::Go => (
+            "\"go build ./...\"",
+            "\"go test ./...\"",
+            "\"golangci-lint run\"",
+            "[]",
+        ),
+        ProjectType::Unknown => ("[]", "[]", "[]", "[]"),
+    };
+
+    format!(
+        r#"# Blacksmith configuration
+# See documentation for all available options.
+
+[agent]
+command = "{command}"
+args = [{args}]
+prompt_via = "{prompt_via}"
+
+[session]
+max_iterations = 100
+
+[storage]
+compress_after = 5
+retention = "last-50"
+
+[workers]
+max = 1
+
+[quality_gates]
+check = {check}
+test = {test}
+lint = {lint}
+format = {format}
+"#,
+        command = agent.command,
+        args = args_str,
+        prompt_via = agent.prompt_via,
+        check = check,
+        test = test,
+        lint = lint,
+        format = format,
+    )
+}
+
 /// Detected project type based on marker files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectType {
@@ -286,8 +423,16 @@ pub fn guidance_message(
     commands: &[DetectedCommand],
     prompt_created: bool,
     llm_customized: bool,
+    agent: Option<&AgentProfile>,
 ) -> String {
     let mut msg = String::new();
+
+    if let Some(agent) = agent {
+        msg.push_str(&format!("Detected agent: {}\n", agent.name));
+    } else {
+        msg.push_str("No supported agent found on PATH — defaulting to claude profile.\n");
+        msg.push_str("Install an agent (claude, codex, opencode, aider) and edit config.toml.\n");
+    }
 
     if prompt_created {
         msg.push('\n');
@@ -451,17 +596,20 @@ mod tests {
     #[test]
     fn guidance_message_with_detected_commands_no_llm() {
         let cmds = default_commands(&ProjectType::Rust);
-        let msg = guidance_message(&ProjectType::Rust, &cmds, true, false);
+        let agent = agent_profiles().into_iter().find(|a| a.name == "claude");
+        let msg = guidance_message(&ProjectType::Rust, &cmds, true, false, agent.as_ref());
         assert!(msg.contains("Detected project type: Rust (Cargo)"));
         assert!(msg.contains("cargo test --release"));
         assert!(msg.contains("created with defaults"));
         assert!(msg.contains("install Claude CLI"));
+        assert!(msg.contains("Detected agent: claude"));
     }
 
     #[test]
     fn guidance_message_with_llm_customized() {
         let cmds = default_commands(&ProjectType::Rust);
-        let msg = guidance_message(&ProjectType::Rust, &cmds, true, true);
+        let agent = agent_profiles().into_iter().find(|a| a.name == "claude");
+        let msg = guidance_message(&ProjectType::Rust, &cmds, true, true, agent.as_ref());
         assert!(msg.contains("Detected project type: Rust (Cargo)"));
         assert!(msg.contains("auto-customized"));
         assert!(!msg.contains("created with defaults"));
@@ -469,15 +617,90 @@ mod tests {
 
     #[test]
     fn guidance_message_unknown_project() {
-        let msg = guidance_message(&ProjectType::Unknown, &[], true, false);
+        let msg = guidance_message(&ProjectType::Unknown, &[], true, false, None);
         assert!(!msg.contains("Detected project type"));
         assert!(msg.contains("created with defaults"));
+        assert!(msg.contains("No supported agent found"));
     }
 
     #[test]
     fn guidance_message_existing_prompt() {
-        let msg = guidance_message(&ProjectType::Rust, &[], false, false);
+        let msg = guidance_message(&ProjectType::Rust, &[], false, false, None);
         assert!(msg.contains("already exists"));
         assert!(!msg.contains("created with defaults"));
+    }
+
+    #[test]
+    fn test_agent_profiles_all_unique_names() {
+        let profiles = agent_profiles();
+        let mut names: Vec<&str> = profiles.iter().map(|p| p.name).collect();
+        let original_len = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            original_len,
+            "agent profile names must be unique"
+        );
+    }
+
+    #[test]
+    fn test_generate_config_toml_rust_claude() {
+        let agent = agent_profiles()
+            .into_iter()
+            .find(|a| a.name == "claude")
+            .unwrap();
+        let cmds = default_commands(&ProjectType::Rust);
+        let toml = generate_config_toml(&ProjectType::Rust, &agent, &cmds);
+        assert!(toml.contains("command = \"claude\""));
+        assert!(toml.contains("\"--verbose\""));
+        assert!(toml.contains("prompt_via = \"arg\""));
+        assert!(toml.contains("check = \"cargo check --release\""));
+        assert!(toml.contains("test = \"cargo test --release\""));
+        assert!(toml.contains("lint = \"cargo clippy --fix --allow-dirty\""));
+        assert!(toml.contains("format = \"cargo fmt --check\""));
+        assert!(toml.contains("[workers]"));
+        assert!(toml.contains("max = 1"));
+    }
+
+    #[test]
+    fn test_generate_config_toml_node_claude() {
+        let agent = agent_profiles()
+            .into_iter()
+            .find(|a| a.name == "claude")
+            .unwrap();
+        let cmds = default_commands(&ProjectType::Node);
+        let toml = generate_config_toml(&ProjectType::Node, &agent, &cmds);
+        assert!(toml.contains("check = \"npm run build\""));
+        assert!(toml.contains("test = \"npm test\""));
+        assert!(toml.contains("lint = \"npm run lint\""));
+        assert!(toml.contains("format = []"));
+    }
+
+    #[test]
+    fn test_generate_config_toml_unknown_project() {
+        let agent = agent_profiles()
+            .into_iter()
+            .find(|a| a.name == "claude")
+            .unwrap();
+        let toml = generate_config_toml(&ProjectType::Unknown, &agent, &[]);
+        assert!(toml.contains("check = []"));
+        assert!(toml.contains("test = []"));
+        assert!(toml.contains("lint = []"));
+        assert!(toml.contains("format = []"));
+    }
+
+    #[test]
+    fn test_generate_config_toml_aider() {
+        let agent = agent_profiles()
+            .into_iter()
+            .find(|a| a.name == "aider")
+            .unwrap();
+        let cmds = default_commands(&ProjectType::Rust);
+        let toml = generate_config_toml(&ProjectType::Rust, &agent, &cmds);
+        assert!(toml.contains("command = \"aider\""));
+        assert!(toml.contains("prompt_via = \"file\""));
+        assert!(toml.contains("\"--message-file\""));
+        assert!(toml.contains("\"--yes-always\""));
     }
 }

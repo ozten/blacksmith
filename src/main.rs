@@ -989,10 +989,31 @@ async fn main() {
 
     // Handle subcommands that don't need the full config
     if let Some(Commands::Init) = &cli.command {
+        let project_root = std::env::current_dir().unwrap_or_else(|e| {
+            eprintln!("Cannot determine current directory: {e}");
+            std::process::exit(1);
+        });
+
+        // Detect project type and agent
+        let project_type = init::detect_project_type(&project_root);
+        let commands = init::default_commands(&project_type);
+        let detected_agent = init::detect_agent();
+        let agent = detected_agent
+            .clone()
+            .unwrap_or_else(|| init::agent_profiles().into_iter().next().unwrap()); // fallback to claude
+
+        if detected_agent.is_some() {
+            println!("Detected agent: {}", agent.name);
+        } else {
+            eprintln!("No supported agent found on PATH — defaulting to claude profile.");
+        }
+
+        // Generate project-aware config and initialize data directory
+        let config_content = init::generate_config_toml(&project_type, &agent, &commands);
         let config = HarnessConfig::load(&cli.config).unwrap_or_default();
         let dd = data_dir::DataDir::new(&config.storage.data_dir);
-        match dd.ensure_initialized() {
-            Ok(()) => {
+        match dd.init_with_config(&config_content) {
+            Ok(_) => {
                 println!(
                     "Initialized data directory: {}",
                     config.storage.data_dir.display()
@@ -1003,11 +1024,11 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        if let Err(e) = dd.update_gitignore() {
+            eprintln!("Warning: could not update .gitignore: {e}");
+        }
+
         // Install bundled Claude Code skills (idempotent — skips existing files)
-        let project_root = std::env::current_dir().unwrap_or_else(|e| {
-            eprintln!("Cannot determine current directory: {e}");
-            std::process::exit(1);
-        });
         match skills::install_bundled_skills(&project_root) {
             Ok(0) => {} // all skills already present
             Ok(n) => println!("Installed {n} bundled Claude skill(s) to .claude/skills/"),
@@ -1016,9 +1037,7 @@ async fn main() {
             }
         }
 
-        // Detect project type and generate PROMPT.md with verification commands
-        let project_type = init::detect_project_type(&project_root);
-        let commands = init::default_commands(&project_type);
+        // Generate PROMPT.md with verification commands
         let prompt_content = init::generate_prompt_md(&commands);
         let prompt_created = match init::write_prompt_md_if_missing(&project_root, &prompt_content)
         {
@@ -1049,7 +1068,13 @@ async fn main() {
         };
         print!(
             "{}",
-            init::guidance_message(&project_type, &commands, prompt_created, llm_customized)
+            init::guidance_message(
+                &project_type,
+                &commands,
+                prompt_created,
+                llm_customized,
+                detected_agent.as_ref(),
+            )
         );
         return;
     }

@@ -126,7 +126,7 @@ retention = \"last-50\"
     /// Append the data directory path to .gitignore if:
     /// 1. A .gitignore file exists in the current directory or parent of data_dir
     /// 2. It doesn't already contain the entry
-    fn update_gitignore(&self) -> std::io::Result<()> {
+    pub fn update_gitignore(&self) -> std::io::Result<()> {
         // Determine where .gitignore should be (parent of data_dir, or cwd)
         let gitignore_dir = self.root.parent().unwrap_or_else(|| Path::new("."));
         let gitignore_path = gitignore_dir.join(".gitignore");
