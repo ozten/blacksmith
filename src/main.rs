@@ -1667,24 +1667,13 @@ async fn main() {
         "blacksmith starting"
     );
 
-    // Run: multi-agent coordinator when workers.max > 1, serial loop otherwise
-    if config.workers.max > 1 {
-        let summary = coordinator::run(&config, &data_dir, &signals, cli.quiet).await;
-        tracing::info!(
-            completed = summary.completed_beads,
-            failed = summary.failed_beads,
-            reason = ?summary.exit_reason,
-            "coordinator finished"
-        );
-    } else {
-        let summary = runner::run(&config, &data_dir, &signals, cli.quiet).await;
-        tracing::info!(
-            productive = summary.productive_iterations,
-            global = summary.global_iteration,
-            reason = ?summary.exit_reason,
-            "loop finished"
-        );
-    }
+    let summary = coordinator::run(&config, &data_dir, &signals, cli.quiet).await;
+    tracing::info!(
+        completed = summary.completed_beads,
+        failed = summary.failed_beads,
+        reason = ?summary.exit_reason,
+        "coordinator finished"
+    );
 }
 
 #[cfg(test)]

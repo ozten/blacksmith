@@ -1,22 +1,20 @@
-## Session: Skip worktree and integration for workers.max=1 (simple-agent-harness-458j)
+## Session: Route workers.max=1 through coordinator (simple-agent-harness-2dln)
 
 ### Completed
-- Added `is_single_agent()` method to `WorkerPool` — returns true when max workers = 1
-- Modified `spawn_worker()` to skip `worktree::create()` when single-agent, using `repo_dir` directly
-- Modified `reset_worker()` to skip `worktree::remove()` when single-agent
-- Added `close_bead_direct()` helper in coordinator that runs `bd close` + `bd sync` without merge
-- Modified coordinator integration path to skip `integration_queue.integrate()` when single-agent, calling `close_bead_direct()` instead
-- Added 4 tests: `test_spawn_worker_single_agent_no_worktree`, `test_is_single_agent`, `test_close_bead_direct_does_not_panic`, `test_coordinator_single_agent_direct_commit`
+- Removed the runner branch in main.rs — all configurations now use coordinator::run()
+- Updated coordinator.rs doc comment to reflect it handles all modes (single + multi-agent)
+- Kept `mod runner` declaration and runner.rs intact for future cleanup bead
 
 ### Files Changed
-- src/pool.rs (modified — added is_single_agent(), skip worktree create/remove for max=1)
-- src/coordinator.rs (modified — added close_bead_direct(), skip integration merge for max=1)
+- src/main.rs (modified — removed if/else dispatch, always use coordinator::run())
+- src/coordinator.rs (modified — updated module doc comment)
 
 ### Current State
 - All 1135 tests pass (1 ignored)
-- Clippy clean (only pre-existing dead_code warning for preflight::fatals())
+- Clippy clean (only pre-existing warnings in watchdog.rs)
 - Fmt clean
 
 ### Suggested Next Tasks
-- Next ready beads: simple-agent-harness-ukxz, simple-agent-harness-6ugm
-- Downstream bead simple-agent-harness-2dln (Route workers.max=1 through coordinator) is now unblocked
+- simple-agent-harness-teuq: Delete runner.rs (now unblocked by this bead)
+- simple-agent-harness-ukxz: Harden customize_prompt_with_llm result handling
+- simple-agent-harness-6ugm: Strengthen LLM customization prompt to forbid editing

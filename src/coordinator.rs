@@ -1,9 +1,10 @@
 /// Multi-agent coordinator: assigns beads to idle workers and manages their lifecycle.
 ///
-/// When `workers.max > 1`, the coordinator replaces the serial runner loop.
-/// It reads ready beads, uses the scheduler to find non-conflicting assignments,
-/// spawns workers in git worktrees, and polls for completions.
-/// Completed workers are queued for sequential integration into main.
+/// The coordinator is the main execution path for all configurations (single or
+/// multi-agent). It reads ready beads, uses the scheduler to find non-conflicting
+/// assignments, spawns workers in git worktrees (skipped for max=1), and polls
+/// for completions. Completed workers are queued for sequential integration into
+/// main (also skipped for max=1).
 use crate::adapters;
 use crate::config::HarnessConfig;
 use crate::cycle_detect;
