@@ -3613,3 +3613,26 @@ Implemented three features for the self-improvement feedback loop:
 ### Suggested Next Tasks
 - Validate end-to-end in a cantrip run that first-turn agent sessions no longer hit "Database out of sync with JSONL".
 - If desired, add a focused unit seam around `run_bd_sync_import_only` for explicit assertion of warning-path behavior.
+
+--- 2026-02-18 17:36:23 | simple-agent-harness-nvzo ---
+## Session: Auto-close epics when all children are closed (simple-agent-harness-nvzo)
+
+### Completed
+- Extended post-integration bead-closing flow in `src/integrator.rs` to auto-close parent epics when all of their `parent-child` dependencies are no longer open.
+- Added upward chaining: when an epic auto-closes, the logic re-checks whether that closure now makes its parent epic eligible.
+- Kept failure behavior non-fatal: failures in `bd list`, `bd close`, or `bd sync` during auto-close emit warnings and integration continues.
+- Added unit tests for parsing open-issue dependency data and determining parent-epic close eligibility.
+
+### Verification Run
+- `cargo test` (pass)
+- `cargo test --release` (pass)
+- `cargo clippy --fix --allow-dirty` (pass)
+- `cargo fmt --check` initially failed; applied `cargo fmt`
+- `cargo check` (pass)
+
+### Current State
+- Integrated beads are closed in bd as before.
+- After a successful close, parent epics are now evaluated and auto-closed when their children are complete, with recursive upward chaining.
+
+### Suggested Next Task
+- Add an integration-style test with a mocked/fake `bd` command path to validate end-to-end command sequencing (`close child -> sync -> close parent -> sync`) across multiple hierarchy levels.

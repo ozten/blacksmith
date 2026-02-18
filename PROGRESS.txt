@@ -1,15 +1,21 @@
-## Session: Pre-spawn worktree bd sync import-only (simple-agent-harness-dd3w)
+## Session: Auto-close epics when all children are closed (simple-agent-harness-nvzo)
 
 ### Completed
-- Added a best-effort `bd sync --import-only` call in `spawn_worker` after worktree selection/creation and before agent process spawn.
-- Implemented failure-tolerant behavior: worker spawn now continues if the command exits non-zero or if `bd` cannot be executed, with warning logs in both cases.
-- Verified with required gates: `cargo test`, `cargo test --release`, `cargo clippy --fix --allow-dirty`, and `cargo fmt --check`.
+- Extended post-integration bead-closing flow in `src/integrator.rs` to auto-close parent epics when all of their `parent-child` dependencies are no longer open.
+- Added upward chaining: when an epic auto-closes, the logic re-checks whether that closure now makes its parent epic eligible.
+- Kept failure behavior non-fatal: failures in `bd list`, `bd close`, or `bd sync` during auto-close emit warnings and integration continues.
+- Added unit tests for parsing open-issue dependency data and determining parent-epic close eligibility.
+
+### Verification Run
+- `cargo test` (pass)
+- `cargo test --release` (pass)
+- `cargo clippy --fix --allow-dirty` (pass)
+- `cargo fmt --check` initially failed; applied `cargo fmt`
+- `cargo check` (pass)
 
 ### Current State
-- Worker startup now attempts to refresh the worktree-local beads SQLite view before each session.
-- Existing pool tests continue to pass in environments without initialized `.beads` in test worktrees, confirming spawn remains non-fatal when sync fails.
-- Working tree changes are limited to `src/pool.rs`.
+- Integrated beads are closed in bd as before.
+- After a successful close, parent epics are now evaluated and auto-closed when their children are complete, with recursive upward chaining.
 
-### Suggested Next Tasks
-- Validate end-to-end in a cantrip run that first-turn agent sessions no longer hit "Database out of sync with JSONL".
-- If desired, add a focused unit seam around `run_bd_sync_import_only` for explicit assertion of warning-path behavior.
+### Suggested Next Task
+- Add an integration-style test with a mocked/fake `bd` command path to validate end-to-end command sequencing (`close child -> sync -> close parent -> sync`) across multiple hierarchy levels.

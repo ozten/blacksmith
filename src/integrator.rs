@@ -15,7 +15,7 @@ use crate::db;
 use crate::task_manifest;
 use crate::worktree;
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -853,6 +853,114 @@ impl IntegrationQueue {
                 tracing::warn!(bead_id, error = %e, "failed to run bd sync after integration");
             }
         }
+
+        self.close_parent_epics_in_bd(bead_id);
+    }
+
+    /// If the integrated bead completes an epic (all children closed), close it.
+    ///
+    /// This runs recursively: closing a parent epic may make its own parent
+    /// eligible for closure as well.
+    fn close_parent_epics_in_bd(&self, closed_bead_id: &str) {
+        let mut queue = vec![closed_bead_id.to_string()];
+        let mut visited = HashSet::new();
+
+        while let Some(closed_id) = queue.pop() {
+            if !visited.insert(closed_id.clone()) {
+                continue;
+            }
+
+            let open_issues = match self.fetch_open_issues_from_bd() {
+                Some(issues) => issues,
+                None => return,
+            };
+            let parent_epics = find_closable_parent_epics(&closed_id, &open_issues);
+
+            for parent_id in parent_epics {
+                match Command::new("bd")
+                    .args(["close", &parent_id, "--reason", "all children completed"])
+                    .current_dir(&self.repo_dir)
+                    .output()
+                {
+                    Ok(out) if out.status.success() => {
+                        tracing::info!(
+                            child_bead_id = %closed_id,
+                            parent_epic_id = %parent_id,
+                            "auto-closed parent epic after child integration"
+                        );
+                        match Command::new("bd")
+                            .args(["sync"])
+                            .current_dir(&self.repo_dir)
+                            .output()
+                        {
+                            Ok(out) if out.status.success() => {
+                                tracing::info!(parent_epic_id = %parent_id, "bd sync succeeded after auto-close");
+                            }
+                            Ok(out) => {
+                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                tracing::warn!(
+                                    parent_epic_id = %parent_id,
+                                    stderr = %stderr.trim(),
+                                    "bd sync failed after auto-closing parent epic"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    parent_epic_id = %parent_id,
+                                    error = %e,
+                                    "failed to run bd sync after auto-closing parent epic"
+                                );
+                            }
+                        }
+
+                        queue.push(parent_id);
+                    }
+                    Ok(out) => {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        tracing::warn!(
+                            child_bead_id = %closed_id,
+                            parent_epic_id = %parent_id,
+                            stderr = %stderr.trim(),
+                            "bd close failed when auto-closing parent epic"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            child_bead_id = %closed_id,
+                            parent_epic_id = %parent_id,
+                            error = %e,
+                            "failed to run bd close when auto-closing parent epic"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fetch currently open issues from bd for parent/child closure checks.
+    fn fetch_open_issues_from_bd(&self) -> Option<Vec<OpenIssue>> {
+        match Command::new("bd")
+            .args(["list", "--status=open", "--json"])
+            .current_dir(&self.repo_dir)
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                let json_str = String::from_utf8_lossy(&out.stdout);
+                Some(parse_open_issues_json(&json_str))
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                tracing::warn!(
+                    stderr = %stderr.trim(),
+                    "bd list --status=open --json failed during epic auto-close check"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to run bd list during epic auto-close check");
+                None
+            }
+        }
     }
 
     /// Run a compiler check in the worktree.
@@ -1172,6 +1280,85 @@ impl IntegrationQueue {
             tracing::warn!(error = %e, "failed to update assignment status to integration_failed");
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct OpenIssue {
+    id: String,
+    issue_type: String,
+    parent_child_ids: Vec<String>,
+}
+
+/// Parse `bd list --status=open --json` into a compact issue representation.
+fn parse_open_issues_json(json_str: &str) -> Vec<OpenIssue> {
+    let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(json_str);
+    match parsed {
+        Ok(issues) => issues
+            .iter()
+            .filter_map(|issue| {
+                let id = issue.get("id").and_then(|v| v.as_str())?.to_string();
+                let issue_type = issue
+                    .get("issue_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("task")
+                    .to_string();
+                let dependencies = issue
+                    .get("dependencies")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let parent_child_ids = dependencies
+                    .iter()
+                    .filter_map(|dep| {
+                        let dep_type = dep.get("type").and_then(|v| v.as_str())?;
+                        if dep_type.eq_ignore_ascii_case("parent-child") {
+                            dep.get("depends_on_id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                Some(OpenIssue {
+                    id,
+                    issue_type,
+                    parent_child_ids,
+                })
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to parse open issue JSON during epic auto-close check"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Find parent epics of `closed_child_id` whose children are all closed.
+fn find_closable_parent_epics(closed_child_id: &str, open_issues: &[OpenIssue]) -> Vec<String> {
+    let open_ids: HashSet<&str> = open_issues.iter().map(|i| i.id.as_str()).collect();
+
+    open_issues
+        .iter()
+        .filter(|issue| issue.issue_type.eq_ignore_ascii_case("epic"))
+        .filter(|issue| {
+            issue
+                .parent_child_ids
+                .iter()
+                .any(|id| id == closed_child_id)
+        })
+        .filter(|issue| {
+            issue
+                .parent_child_ids
+                .iter()
+                .all(|child_id| !open_ids.contains(child_id.as_str()))
+        })
+        .map(|issue| issue.id.clone())
+        .collect()
 }
 
 /// Get current UTC time as ISO 8601 string.
@@ -1593,6 +1780,69 @@ mod tests {
         let main_after = queue.get_head_commit(repo_dir).unwrap();
         assert_eq!(main_after, wt_head, "main should point to worktree HEAD");
         assert_ne!(main_before, main_after, "main should have advanced");
+    }
+
+    #[test]
+    fn test_parse_open_issues_json_extracts_parent_child_dependencies() {
+        let json = r#"[
+            {
+                "id": "epic-1",
+                "issue_type": "epic",
+                "dependencies": [
+                    {"depends_on_id": "task-1", "type": "parent-child"},
+                    {"depends_on_id": "other", "type": "blocks"}
+                ]
+            },
+            {
+                "id": "task-1",
+                "issue_type": "task",
+                "dependencies": []
+            }
+        ]"#;
+
+        let parsed = parse_open_issues_json(json);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].id, "epic-1");
+        assert_eq!(parsed[0].issue_type, "epic");
+        assert_eq!(parsed[0].parent_child_ids, vec!["task-1"]);
+        assert_eq!(parsed[1].id, "task-1");
+        assert!(parsed[1].parent_child_ids.is_empty());
+    }
+
+    #[test]
+    fn test_find_closable_parent_epics_when_last_child_closed() {
+        let open_issues = vec![OpenIssue {
+            id: "epic-1".to_string(),
+            issue_type: "epic".to_string(),
+            parent_child_ids: vec!["task-1".to_string(), "task-2".to_string()],
+        }];
+
+        let closable = find_closable_parent_epics("task-1", &open_issues);
+        assert_eq!(closable, vec!["epic-1"]);
+    }
+
+    #[test]
+    fn test_find_closable_parent_epics_not_closable_with_open_sibling() {
+        let open_issues = vec![
+            OpenIssue {
+                id: "epic-1".to_string(),
+                issue_type: "epic".to_string(),
+                parent_child_ids: vec!["task-1".to_string(), "task-2".to_string()],
+            },
+            OpenIssue {
+                id: "task-1".to_string(),
+                issue_type: "task".to_string(),
+                parent_child_ids: vec![],
+            },
+            OpenIssue {
+                id: "task-2".to_string(),
+                issue_type: "task".to_string(),
+                parent_child_ids: vec![],
+            },
+        ];
+
+        let closable = find_closable_parent_epics("task-1", &open_issues);
+        assert!(closable.is_empty());
     }
 
     #[test]
