@@ -19,16 +19,57 @@ BLACKSMITH_VERSION=0.1.0 curl -fsSL https://raw.githubusercontent.com/ozten/blac
 
 ## Quick Start
 
-1. Create a `PROMPT.md` with instructions for your agent.
-2. Run:
+Initialize blacksmith in your project:
 
 ```bash
-blacksmith
+cd your-project
+blacksmith init
 ```
 
-With no config file, sensible defaults apply: runs `claude` for up to 25 productive iterations, monitors for stale sessions, retries empty outputs, and handles rate limits with exponential backoff.
+This creates a `.blacksmith/` directory with a default `config.toml` and a `PROMPT.md` template. Edit `PROMPT.md` with instructions for your agent, then start the loop:
+
+```bash
+blacksmith loop
+```
+
+Blacksmith runs `claude` by default for up to 25 productive iterations, monitoring for stale sessions, retrying empty outputs, and handling rate limits with exponential backoff.
 
 See [docs/getting-started.md](docs/getting-started.md) for a full walkthrough.
+
+## Configuration
+
+Edit `.blacksmith/config.toml` to customize behavior:
+
+```toml
+[agent]
+command = "claude"           # Or "codex", "aider", "opencode", etc.
+
+[workers]
+max = 3                      # Concurrent workers (1 = serial mode)
+
+[session]
+max_iterations = 25
+```
+
+Blacksmith supports multiple AI agents — see [Agent Adapters](docs/adapters.md) for Claude, Codex, OpenCode, Aider, and Raw adapter details.
+
+For the full configuration reference, see [docs/configuration.md](docs/configuration.md).
+
+## Dashboard
+
+Launch a metrics server in each project directory:
+
+```bash
+blacksmith serve &
+```
+
+Then launch the multi-project dashboard once:
+
+```bash
+blacksmith-ui
+```
+
+This opens a browser dashboard that monitors all running blacksmith projects — workers, progress, metrics, and session health — from a single view.
 
 ## Features
 
@@ -55,16 +96,6 @@ Full documentation lives in [`docs/`](docs/README.md):
 - [Deployment Model](docs/deployment.md)
 - [Architecture Analysis](docs/architecture-analysis.md)
 - [Troubleshooting](docs/troubleshooting.md)
-
-## Specs
-
-Design specifications in [`prd/`](prd/):
-
-- [V1: Core Loop](prd/SPEC.md)
-- [V2: Metrics & Institutional Memory](prd/SPEC-v2-metrics.md)
-- [V3: Multi-Agent Coordination](prd/SPEC-v3-agents.md)
-- [V3.5: Deployment Model](prd/SPEC-v4-deploy-self-improvement.md)
-- [V5: Architecture Analysis](prd/SPEC-v5-automated-architecture-and-metadata.md)
 
 ## Development
 
