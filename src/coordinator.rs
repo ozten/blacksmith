@@ -118,6 +118,7 @@ pub async fn run(
     let mut completed_beads = 0u32;
     let mut failed_beads = 0u32;
     let mut consecutive_no_work = 0u32;
+    let mut previous_dependency_filter_counts: Option<(usize, usize)> = None;
     const MAX_CONSECUTIVE_NO_WORK: u32 = 3;
 
     // StatusTracker: write state transitions so `--status` works
@@ -359,7 +360,29 @@ pub async fn run(
 
             // Query beads, detect cycles, and filter out cycled beads
             let bead_query = query_ready_beads();
+            let blocked_count = bead_query.blocked_count;
             let ready_beads = bead_query.ready;
+            let current_dependency_filter_counts = (blocked_count, ready_beads.len());
+
+            if blocked_count > 0 {
+                if should_log_dependency_filter_info(
+                    previous_dependency_filter_counts,
+                    current_dependency_filter_counts,
+                ) {
+                    tracing::info!(
+                        blocked = blocked_count,
+                        ready = ready_beads.len(),
+                        "filtered out {blocked_count} beads with unresolved dependencies"
+                    );
+                } else {
+                    tracing::debug!(
+                        blocked = blocked_count,
+                        ready = ready_beads.len(),
+                        "filtered out {blocked_count} beads with unresolved dependencies"
+                    );
+                }
+            }
+            previous_dependency_filter_counts = Some(current_dependency_filter_counts);
 
             if ready_beads.is_empty() && pool.active_count() == 0 {
                 consecutive_no_work += 1;
@@ -872,6 +895,8 @@ fn parse_orphaned_bead_ids(json_str: &str) -> Vec<String> {
 struct BeadQuery {
     /// Beads available for scheduling (after filtering out cycled ones).
     ready: Vec<ReadyBead>,
+    /// Number of open beads blocked by unresolved dependencies.
+    blocked_count: usize,
     /// Detected dependency cycles (each cycle is a list of bead IDs).
     /// Used by CLI status output (simple-agent-harness-cqf) and in tests.
     #[allow(dead_code)]
@@ -895,6 +920,7 @@ fn query_ready_beads() -> BeadQuery {
             tracing::debug!("bd command not available or failed, no beads to schedule");
             BeadQuery {
                 ready: Vec::new(),
+                blocked_count: 0,
                 cycles: Vec::new(),
             }
         }
@@ -988,18 +1014,19 @@ fn parse_and_filter_beads(json_str: &str) -> BeadQuery {
         .collect();
 
     let blocked_count = before_dep_count - truly_ready.len();
-    if blocked_count > 0 {
-        tracing::info!(
-            blocked = blocked_count,
-            ready = truly_ready.len(),
-            "filtered out {blocked_count} beads with unresolved dependencies"
-        );
-    }
 
     BeadQuery {
         ready: truly_ready,
+        blocked_count,
         cycles,
     }
+}
+
+fn should_log_dependency_filter_info(
+    previous_counts: Option<(usize, usize)>,
+    current_counts: (usize, usize),
+) -> bool {
+    previous_counts != Some(current_counts)
 }
 
 /// Format a cycle as a readable path: "A -> B -> C -> A"
@@ -1493,6 +1520,7 @@ mod tests {
         ]"#;
         let result = parse_and_filter_beads(json);
         assert_eq!(result.ready.len(), 2);
+        assert_eq!(result.blocked_count, 0);
         assert!(result.cycles.is_empty());
     }
 
@@ -1505,6 +1533,7 @@ mod tests {
         ]"#;
         let result = parse_and_filter_beads(json);
         assert_eq!(result.ready.len(), 1);
+        assert_eq!(result.blocked_count, 1);
         assert_eq!(result.ready[0].id, "b");
         assert!(result.cycles.is_empty());
     }
@@ -1518,6 +1547,7 @@ mod tests {
         ]"#;
         let result = parse_and_filter_beads(json);
         assert_eq!(result.ready.len(), 2);
+        assert_eq!(result.blocked_count, 0);
         assert!(result.cycles.is_empty());
     }
 
@@ -1531,6 +1561,7 @@ mod tests {
         ]"#;
         let result = parse_and_filter_beads(json);
         assert_eq!(result.ready.len(), 1);
+        assert_eq!(result.blocked_count, 2);
         assert_eq!(result.ready[0].id, "c");
         assert!(result.cycles.is_empty());
     }
@@ -1545,9 +1576,17 @@ mod tests {
         let result = parse_and_filter_beads(json);
         // a and b are in a cycle, only c should remain
         assert_eq!(result.ready.len(), 1);
+        assert_eq!(result.blocked_count, 0);
         assert_eq!(result.ready[0].id, "c");
         assert_eq!(result.cycles.len(), 1);
         assert_eq!(result.cycles[0], vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_should_log_dependency_filter_info() {
+        assert!(should_log_dependency_filter_info(None, (2, 3)));
+        assert!(should_log_dependency_filter_info(Some((1, 3)), (2, 3)));
+        assert!(!should_log_dependency_filter_info(Some((2, 3)), (2, 3)));
     }
 
     #[test]

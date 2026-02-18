@@ -3553,6 +3553,26 @@ Implemented three features for the self-improvement feedback loop:
 ### Suggested Next Tasks
 - Pick next highest-priority ready bead.
 
+--- 2026-02-18 17:24:16 | simple-agent-harness-1on9 ---
+## Session: Debounce dependency-filter INFO logs (simple-agent-harness-1on9)
+
+### Completed
+- Added coordinator-loop state tracking for previous dependency-filter counts: `(blocked_count, ready_count)`.
+- Moved `filtered out N beads with unresolved dependencies` emission to the loop:
+  - INFO when counts change (including first occurrence)
+  - DEBUG when counts are unchanged
+- Extended `BeadQuery` with `blocked_count` so logging decisions are made at the scheduling call site.
+- Added/updated unit tests in `src/coordinator.rs` for `blocked_count` behavior and INFO/debounce decision helper.
+- Verification run: `cargo test`, `cargo test --release`, `cargo clippy --fix --allow-dirty`, `cargo fmt --check`, `cargo check`.
+
+### Current State
+- Repeated identical dependency-filter polls no longer spam INFO logs.
+- Transitions in blocked/ready counts surface at INFO, with repeated steady-state messages downgraded to DEBUG.
+- Working tree changes are limited to `src/coordinator.rs`.
+
+### Suggested Next Tasks
+- Pick the next ready P1 bead from `bd ready`.
+
 --- 2026-02-18 17:24:31 | simple-agent-harness-x761 ---
 ## Session: Close beads after successful multi-agent integration (simple-agent-harness-x761)
 
