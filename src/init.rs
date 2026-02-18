@@ -1,3 +1,4 @@
+use std::io::BufRead;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -181,29 +182,93 @@ pub fn customize_prompt_with_llm(project_root: &Path) -> Result<bool, std::io::E
 
     eprintln!("Customizing PROMPT.md with Claude (this may take a moment)...");
 
-    let child = Command::new("claude")
+    let mut child = Command::new("claude")
         .arg("-p")
         .arg(LLM_CUSTOMIZATION_PROMPT)
         .arg("--allowedTools")
         .arg("Read Glob Grep")
         .arg("--verbose")
         .arg("--output-format")
-        .arg("text")
+        .arg("stream-json")
         .current_dir(project_root)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit()) // let user see progress
         .spawn()?;
 
-    let output = child.wait_with_output()?;
+    // Read streaming JSONL from stdout, extract the final result text
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("failed to capture stdout"))?;
+    let reader = std::io::BufReader::new(stdout);
 
-    if !output.status.success() {
+    let mut result_text: Option<String> = None;
+    let mut saw_generating = false;
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        // Parse each JSONL event; print progress to stderr, capture final result
+        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&line) {
+            match obj.get("type").and_then(|t| t.as_str()) {
+                Some("assistant") => {
+                    if let Some(content) = obj
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                    {
+                        let mut has_tool = false;
+                        let mut has_text = false;
+                        for block in content {
+                            match block.get("type").and_then(|t| t.as_str()) {
+                                Some("tool_use") => {
+                                    has_tool = true;
+                                    if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
+                                        eprint!("  → {name}");
+                                        if let Some(input) = block.get("input") {
+                                            if let Some(path) = input
+                                                .get("file_path")
+                                                .or_else(|| input.get("pattern"))
+                                                .and_then(|p| p.as_str())
+                                            {
+                                                eprint!(" {path}");
+                                            }
+                                        }
+                                        eprintln!();
+                                    }
+                                }
+                                Some("text") => {
+                                    has_text = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                        // When assistant produces text without tools, it's generating the final output
+                        if has_text && !has_tool && !saw_generating {
+                            eprintln!("  → Generating customized PROMPT.md...");
+                            saw_generating = true;
+                        }
+                    }
+                }
+                Some("result") => {
+                    if let Some(text) = obj.get("result").and_then(|r| r.as_str()) {
+                        result_text = Some(text.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let status = child.wait()?;
+    if !status.success() {
         return Err(std::io::Error::other(
             "claude -p exited with non-zero status",
         ));
     }
 
-    let customized = String::from_utf8_lossy(&output.stdout);
-    let trimmed = customized.trim();
+    let trimmed = result_text.as_deref().map(|s| s.trim()).unwrap_or("");
     if trimmed.is_empty() {
         return Err(std::io::Error::other("claude -p returned empty output"));
     }

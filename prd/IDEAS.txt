@@ -14,3 +14,12 @@ But we also want to automate verification as much as possible.
 ---
 
 We should implement code coverage metrics and encourage the system to work towards 80% or higher per module.
+
+
+---
+
+We need to tell the prompt (README, CLAUDE, AGENT... whatever) that this is a build tool
+used in other projects with other frameworks and libraries. To clearly seperate
+our instance of prompts and configs (which are dogfood) from what is deployed to customers.
+
+We need to move the Rust specific verification out into customer config.
