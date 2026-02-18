@@ -170,6 +170,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Run preflight environment checks
+    Preflight,
     /// Close a bead with quality gates (replaces bd-finish.sh)
     Finish {
         /// Bead ID to close (e.g. simple-agent-harness-abc)
@@ -1067,6 +1069,14 @@ async fn main() {
         } else {
             false
         };
+        // Advisory preflight — print issues but don't abort init
+        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let report = preflight::run_preflight(&project_root, &config);
+        if !report.is_clean() {
+            eprintln!("\nPreflight checks:");
+            preflight::print_report(&report);
+        }
+
         print!(
             "{}",
             init::guidance_message(
@@ -1077,6 +1087,20 @@ async fn main() {
                 detected_agent.as_ref(),
             )
         );
+        return;
+    }
+
+    if let Some(Commands::Preflight) = &cli.command {
+        let project_root = std::env::current_dir().unwrap_or_else(|e| {
+            eprintln!("Cannot determine current directory: {e}");
+            std::process::exit(1);
+        });
+        let config = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let report = preflight::run_preflight(&project_root, &config);
+        preflight::print_report(&report);
+        if report.has_fatal() {
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -1608,6 +1632,21 @@ async fn main() {
             }
         }
         return;
+    }
+
+    // Run preflight checks before starting harness
+    let project_root = std::env::current_dir().unwrap_or_else(|e| {
+        eprintln!("Cannot determine current directory: {e}");
+        std::process::exit(1);
+    });
+    let preflight_report = preflight::run_preflight(&project_root, &config);
+    if preflight_report.has_fatal() {
+        eprintln!("Preflight checks failed:");
+        preflight::print_report(&preflight_report);
+        std::process::exit(1);
+    }
+    for warn in preflight_report.warnings() {
+        tracing::warn!("{}: {}", warn.name, warn.message);
     }
 
     // Acquire singleton lock to prevent concurrent instances

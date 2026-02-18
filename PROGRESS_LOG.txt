@@ -3374,3 +3374,23 @@ Implemented three features for the self-improvement feedback loop:
 
 ### Suggested Next Tasks
 - simple-agent-harness-7vta (wire preflight into CLI, init, and harness startup) — now unblocked
+
+--- 2026-02-18 01:13:15 | simple-agent-harness-7vta ---
+## Session: Wire preflight into CLI, init, and harness startup (simple-agent-harness-7vta)
+
+### Completed
+- Added `Preflight` subcommand to `Commands` enum in main.rs
+- Added `blacksmith preflight` handler: loads config, runs preflight, prints report, exits 1 on fatal
+- Added advisory preflight at end of `Commands::Init` handler: runs checks after setup, prints warnings but doesn't abort
+- Added preflight at harness startup: runs before singleton lock acquisition, aborts on fatal checks, logs warnings via tracing
+
+### Files Changed
+- src/main.rs (modified — added Preflight subcommand, handler, init advisory, harness startup checks)
+
+### Current State
+- All 1131 tests pass
+- Clippy clean (only expected dead_code warning for preflight::fatals())
+- Fmt clean
+
+### Suggested Next Tasks
+- Next ready beads from the queue
