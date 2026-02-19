@@ -29,6 +29,16 @@ pub fn open_or_create(path: &Path) -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS idx_improvements_status ON improvements(status);
         CREATE INDEX IF NOT EXISTS idx_improvements_category ON improvements(category);
 
+        CREATE TABLE IF NOT EXISTS progress_entries (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            created    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            bead_id    TEXT,
+            body       TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_progress_entries_created ON progress_entries(created);
+        CREATE INDEX IF NOT EXISTS idx_progress_entries_bead_id ON progress_entries(bead_id);
+
         CREATE TABLE IF NOT EXISTS events (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             ts        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -307,6 +317,70 @@ pub fn search_improvements(conn: &Connection, query: &str) -> Result<Vec<Improve
         .query_map(rusqlite::params![pattern], map_improvement)?
         .collect::<Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// A row from the progress_entries table.
+#[derive(Debug)]
+pub struct ProgressEntry {
+    pub id: i64,
+    pub created: String,
+    pub bead_id: Option<String>,
+    pub body: String,
+}
+
+/// Insert a new progress entry and return the inserted row id.
+pub fn insert_progress_entry(conn: &Connection, bead_id: Option<&str>, body: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO progress_entries (bead_id, body) VALUES (?1, ?2)",
+        rusqlite::params![bead_id, body],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// List recent progress entries, optionally filtered by bead_id.
+pub fn list_progress_entries(
+    conn: &Connection,
+    bead_id: Option<&str>,
+    last: i64,
+) -> Result<Vec<ProgressEntry>> {
+    let limit = std::cmp::max(1, last);
+    let rows = if let Some(bead_id) = bead_id {
+        let mut stmt = conn.prepare(
+            "SELECT id, created, bead_id, body FROM progress_entries \
+             WHERE bead_id = ?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let mapped = stmt.query_map(rusqlite::params![bead_id, limit], map_progress_entry)?;
+        mapped.collect::<Result<Vec<_>>>()?
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, created, bead_id, body FROM progress_entries ORDER BY id DESC LIMIT ?1",
+        )?;
+        let mapped = stmt.query_map(rusqlite::params![limit], map_progress_entry)?;
+        mapped.collect::<Result<Vec<_>>>()?
+    };
+    Ok(rows)
+}
+
+/// Get the most recent progress entry, optionally scoped to a bead.
+pub fn latest_progress_entry(
+    conn: &Connection,
+    bead_id: Option<&str>,
+) -> Result<Option<ProgressEntry>> {
+    let mut rows = if let Some(bead_id) = bead_id {
+        let mut stmt = conn.prepare(
+            "SELECT id, created, bead_id, body FROM progress_entries \
+             WHERE bead_id = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mapped = stmt.query_map(rusqlite::params![bead_id], map_progress_entry)?;
+        mapped.collect::<Result<Vec<_>>>()?
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, created, bead_id, body FROM progress_entries ORDER BY id DESC LIMIT 1",
+        )?;
+        let mapped = stmt.query_map([], map_progress_entry)?;
+        mapped.collect::<Result<Vec<_>>>()?
+    };
+    Ok(rows.pop())
 }
 
 // ── Events ──────────────────────────────────────────────────────────────
@@ -1149,6 +1223,15 @@ fn map_improvement(row: &rusqlite::Row) -> Result<Improvement> {
     })
 }
 
+fn map_progress_entry(row: &rusqlite::Row) -> Result<ProgressEntry> {
+    Ok(ProgressEntry {
+        id: row.get(0)?,
+        created: row.get(1)?,
+        bead_id: row.get(2)?,
+        body: row.get(3)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1426,6 +1509,49 @@ mod tests {
                 .unwrap();
             assert_eq!(title, "Persisted");
         }
+    }
+
+    #[test]
+    fn insert_and_read_progress_entry_with_bead_id() {
+        let (_dir, conn) = test_db();
+
+        let id = insert_progress_entry(
+            &conn,
+            Some("simple-agent-harness-c34r"),
+            "## Handoff\n- Completed X\n- Next Y\n",
+        )
+        .unwrap();
+        assert!(id > 0);
+
+        let entry = latest_progress_entry(&conn, Some("simple-agent-harness-c34r"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.bead_id.as_deref(), Some("simple-agent-harness-c34r"));
+        assert!(entry.body.contains("Completed X"));
+    }
+
+    #[test]
+    fn insert_progress_entry_without_bead_id() {
+        let (_dir, conn) = test_db();
+
+        insert_progress_entry(&conn, None, "entry without bead").unwrap();
+        let entry = latest_progress_entry(&conn, None).unwrap().unwrap();
+        assert!(entry.bead_id.is_none());
+        assert_eq!(entry.body, "entry without bead");
+    }
+
+    #[test]
+    fn list_progress_entries_respects_limit_and_order() {
+        let (_dir, conn) = test_db();
+
+        insert_progress_entry(&conn, Some("b1"), "first").unwrap();
+        insert_progress_entry(&conn, Some("b1"), "second").unwrap();
+        insert_progress_entry(&conn, Some("b1"), "third").unwrap();
+
+        let rows = list_progress_entries(&conn, Some("b1"), 2).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].body, "third");
+        assert_eq!(rows[1].body, "second");
     }
 
     // ── Events table tests ──────────────────────────────────────────────

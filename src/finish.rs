@@ -301,25 +301,7 @@ pub fn handle_finish(
     }
     eprintln!("[0c] Deliverable verification passed\n");
 
-    // --- Step 1: Append PROGRESS.txt to PROGRESS_LOG.txt ---
-    let progress_path = working_dir.join("PROGRESS.txt");
-    let log_path = working_dir.join("PROGRESS_LOG.txt");
-    if progress_path.exists() {
-        if let Ok(progress_content) = std::fs::read_to_string(&progress_path) {
-            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-            let entry = format!("\n--- {timestamp} | {bead_id} ---\n{progress_content}");
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()));
-            eprintln!("[1] Appended PROGRESS.txt to PROGRESS_LOG.txt");
-        }
-    } else {
-        eprintln!("[1] No PROGRESS.txt found, skipping log append");
-    }
-
-    // --- Step 2: Stage files ---
+    // --- Step 1: Stage files ---
     let stage_result = if files.is_empty() {
         // Stage all tracked modified files
         Command::new("git")
@@ -338,9 +320,9 @@ pub fn handle_finish(
     match stage_result {
         Ok(out) if out.status.success() => {
             if files.is_empty() {
-                eprintln!("[2] Staged all tracked modified files (git add -u)");
+                eprintln!("[1] Staged all tracked modified files (git add -u)");
             } else {
-                eprintln!("[2] Staged {} specified files", files.len());
+                eprintln!("[1] Staged {} specified files", files.len());
             }
         }
         Ok(out) => {
@@ -358,13 +340,7 @@ pub fn handle_finish(
         }
     }
 
-    // Always include progress files if they exist
-    let _ = Command::new("git")
-        .args(["add", "-f", "PROGRESS.txt", "PROGRESS_LOG.txt"])
-        .current_dir(&working_dir)
-        .output();
-
-    // --- Step 3: Git commit ---
+    // --- Step 2: Git commit ---
     let full_msg = format!("{bead_id}: {commit_msg}");
     let commit_result = Command::new("git")
         .args(["commit", "-m", &full_msg, "--no-verify"])
@@ -373,13 +349,13 @@ pub fn handle_finish(
 
     match commit_result {
         Ok(out) if out.status.success() => {
-            eprintln!("[3] Committed: {full_msg}");
+            eprintln!("[2] Committed: {full_msg}");
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             // "nothing to commit" is OK — may happen if files were already committed
             if stderr.contains("nothing to commit") {
-                eprintln!("[3] Nothing to commit (changes already committed)");
+                eprintln!("[2] Nothing to commit (changes already committed)");
             } else {
                 return FinishResult {
                     success: false,
@@ -395,7 +371,7 @@ pub fn handle_finish(
         }
     }
 
-    // --- Step 4: bd close ---
+    // --- Step 3: bd close ---
     let close_result = Command::new("bd")
         .args(["close", bead_id, &format!("--reason={commit_msg}")])
         .current_dir(&working_dir)
@@ -403,7 +379,7 @@ pub fn handle_finish(
 
     match close_result {
         Ok(out) if out.status.success() => {
-            eprintln!("[4] Closed bead {bead_id}");
+            eprintln!("[3] Closed bead {bead_id}");
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -420,14 +396,14 @@ pub fn handle_finish(
         }
     }
 
-    // --- Step 5: bd sync ---
+    // --- Step 4: bd sync ---
     let _ = Command::new("bd")
         .args(["sync"])
         .current_dir(&working_dir)
         .output();
-    eprintln!("[5] Synced beads");
+    eprintln!("[4] Synced beads");
 
-    // --- Step 6: Auto-commit .beads/ if dirty ---
+    // --- Step 5: Auto-commit .beads/ if dirty ---
     let beads_dirty = Command::new("git")
         .args(["diff", "--quiet", ".beads/"])
         .current_dir(&working_dir)
@@ -457,12 +433,12 @@ pub fn handle_finish(
             ])
             .current_dir(&working_dir)
             .output();
-        eprintln!("[6] Committed .beads/ changes");
+        eprintln!("[5] Committed .beads/ changes");
     } else {
-        eprintln!("[6] .beads/ already clean");
+        eprintln!("[5] .beads/ already clean");
     }
 
-    // --- Step 7: Git push ---
+    // --- Step 6: Git push ---
     let push_result = Command::new("git")
         .args(["push"])
         .current_dir(&working_dir)
@@ -470,15 +446,15 @@ pub fn handle_finish(
 
     match push_result {
         Ok(out) if out.status.success() => {
-            eprintln!("[7] Pushed to remote");
+            eprintln!("[6] Pushed to remote");
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            eprintln!("[7] Warning: git push failed: {stderr}");
+            eprintln!("[6] Warning: git push failed: {stderr}");
             // Don't fail the whole operation for a push failure
         }
         Err(e) => {
-            eprintln!("[7] Warning: git push failed: {e}");
+            eprintln!("[6] Warning: git push failed: {e}");
         }
     }
 

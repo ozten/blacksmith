@@ -27,6 +27,7 @@ mod migrate;
 mod module_detect;
 mod pool;
 mod preflight;
+mod progress;
 mod prompt;
 mod public_api;
 mod ratelimit;
@@ -56,7 +57,12 @@ use tracing_subscriber::EnvFilter;
 /// dispatch a prompt, monitor the session, enforce health invariants,
 /// collect metrics, and repeat.
 #[derive(Parser, Debug)]
-#[command(name = "blacksmith", version, about)]
+#[command(
+    name = "blacksmith",
+    version,
+    about,
+    subcommand_precedence_over_arg = true
+)]
 pub struct Cli {
     /// Override max iterations (default: from config)
     #[arg(value_name = "MAX_ITERATIONS")]
@@ -112,6 +118,11 @@ enum Commands {
     Improve {
         #[command(subcommand)]
         action: ImproveAction,
+    },
+    /// Record and inspect session progress entries
+    Progress {
+        #[command(subcommand)]
+        action: ProgressAction,
     },
     /// View and manage session metrics
     Metrics {
@@ -372,6 +383,44 @@ enum ImproveAction {
     Search {
         /// Search query
         query: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ProgressAction {
+    /// Add a progress entry (supports multiline markdown via --stdin or --file)
+    Add {
+        /// Bead ID to associate (optional, but recommended)
+        #[arg(long)]
+        bead_id: Option<String>,
+
+        /// Read entry body from stdin
+        #[arg(long)]
+        stdin: bool,
+
+        /// Read entry body from file
+        #[arg(long)]
+        file: Option<PathBuf>,
+
+        /// Entry body text
+        #[arg(long)]
+        body: Option<String>,
+    },
+    /// List recent progress entries
+    List {
+        /// Optional bead ID filter
+        #[arg(long)]
+        bead_id: Option<String>,
+
+        /// Number of most recent entries to show
+        #[arg(long, default_value = "10")]
+        last: i64,
+    },
+    /// Show the latest progress entry
+    Show {
+        /// Optional bead ID filter
+        #[arg(long)]
+        bead_id: Option<String>,
     },
 }
 
@@ -1505,6 +1554,37 @@ async fn main() {
                 improve::handle_dismiss(&db_path, ref_id, reason.as_deref())
             }
             ImproveAction::Search { query } => improve::handle_search(&db_path, query),
+        };
+
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(Commands::Progress { action }) = &cli.command {
+        let config_for_progress = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = runtime_data_dir(&config_for_progress.storage.data_dir, &cli.config);
+        let db_path = dd.db();
+
+        let result = match action {
+            ProgressAction::Add {
+                bead_id,
+                stdin,
+                file,
+                body,
+            } => progress::handle_add(
+                &db_path,
+                bead_id.as_deref(),
+                body.as_deref(),
+                *stdin,
+                file.as_deref(),
+            ),
+            ProgressAction::List { bead_id, last } => {
+                progress::handle_list(&db_path, bead_id.as_deref(), *last)
+            }
+            ProgressAction::Show { bead_id } => progress::handle_show(&db_path, bead_id.as_deref()),
         };
 
         if let Err(e) = result {

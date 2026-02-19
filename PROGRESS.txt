@@ -1,15 +1,34 @@
-## Session: shared .blacksmith path resolution in worktrees (simple-agent-harness-c34r)
+## Session: Implement blacksmith progress command (simple-agent-harness-c34r)
 
 ### Completed
-- Added worktree-aware path resolution in `src/main.rs` so default CLI config (`.blacksmith/config.toml`) resolves to the shared repository root via `git rev-parse --git-common-dir`.
-- Updated command config loading to use a single resolved config path and to rewrite relative `storage.data_dir` to the shared repo root only when using the default config path.
-- Preserved explicit config override behavior by leaving relative `storage.data_dir` unchanged when `--config` is non-default.
-- Added unit tests validating main checkout vs worktree path equivalence and explicit override behavior.
+- Added first-class `blacksmith progress` CLI with subcommands:
+  - `blacksmith progress add`
+  - `blacksmith progress list`
+  - `blacksmith progress show`
+- Implemented SQLite-backed storage in `progress_entries` table.
+- Added multiline markdown support for progress input (`--stdin`, `--file`, and `--body`).
+- Added missing-bead behavior: warns when `--bead-id` is omitted but still persists entry.
+- Wired command to runtime shared data-dir resolution so main checkout and worktrees use shared DB.
+- Updated operator guidance in `PROMPT.md` and `templates/PROMPT.md.tmpl` to remove PROGRESS file workflow references.
+- Removed legacy `PROGRESS.txt` / `PROGRESS_LOG.txt` handling from `blacksmith finish`.
+
+### Verification run
+- `blacksmith --help | rg '^  progress\b'`
+- `blacksmith progress --help`
+- `printf '## Handoff\n- Completed X\n- Next Y\n' | blacksmith progress add --bead-id simple-agent-harness-c34r --stdin`
+- `blacksmith progress show --bead-id simple-agent-harness-c34r`
+- `blacksmith progress list --bead-id simple-agent-harness-c34r --last 5`
+- `blacksmith progress add --stdin <<< 'entry without bead id'`
+- `rg -n 'Read PROGRESS.txt|write PROGRESS.txt|PROGRESS_LOG.txt' PROMPT.md templates/PROMPT.md.tmpl`
+- `cargo test --release`
+- `cargo clippy --fix --allow-dirty`
+- `cargo fmt --check` (failed due formatting; then applied `cargo fmt`)
 
 ### Current State
-- `cargo test --release` passes with new path-resolution tests.
-- `cargo clippy --fix --allow-dirty` completed successfully.
-- Formatting updates were applied with `cargo fmt` after `cargo fmt --check` reported diffs.
+- All tests pass in release mode.
+- Lint ran successfully with fixes.
+- Files are formatted after `cargo fmt`.
+- Bead is ready to close via `blacksmith finish`.
 
 ### Suggested Next Task
-- Validate the same shared-path behavior through a real CLI smoke run for progress/improve commands from both main checkout and a worker worktree.
+- If any follow-up is needed, monitor for the existing harness.toml deprecation warning and migrate to `.blacksmith/config.toml` project-wide.
