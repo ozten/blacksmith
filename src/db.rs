@@ -3,7 +3,7 @@ use std::path::Path;
 
 /// Opens (or creates) the blacksmith SQLite database at the given path.
 ///
-/// Creates the improvements table and indexes if they don't already exist.
+/// Creates required tables and indexes if they don't already exist.
 /// Returns an open connection ready for use.
 pub fn open_or_create(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
@@ -28,6 +28,16 @@ pub fn open_or_create(path: &Path) -> Result<Connection> {
 
         CREATE INDEX IF NOT EXISTS idx_improvements_status ON improvements(status);
         CREATE INDEX IF NOT EXISTS idx_improvements_category ON improvements(category);
+
+        CREATE TABLE IF NOT EXISTS progress_entries (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            bead_id  TEXT,
+            created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            body     TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_progress_entries_bead_id ON progress_entries(bead_id);
+        CREATE INDEX IF NOT EXISTS idx_progress_entries_created ON progress_entries(created);
 
         CREATE TABLE IF NOT EXISTS events (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,6 +166,72 @@ pub struct Improvement {
     pub body: Option<String>,
     pub context: Option<String>,
     pub tags: Option<String>,
+}
+
+/// A row from the progress_entries table.
+#[derive(Debug)]
+pub struct ProgressEntry {
+    pub id: i64,
+    pub bead_id: Option<String>,
+    pub created: String,
+    pub content: String,
+}
+
+/// Insert a progress entry and return row ID.
+pub fn insert_progress_entry(
+    conn: &Connection,
+    bead_id: Option<&str>,
+    content: &str,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO progress_entries (bead_id, body) VALUES (?1, ?2)",
+        rusqlite::params![bead_id, content],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// List recent progress entries, optionally filtered by bead ID.
+pub fn list_progress_entries(
+    conn: &Connection,
+    bead_id: Option<&str>,
+    last: i64,
+) -> Result<Vec<ProgressEntry>> {
+    let mut stmt = if bead_id.is_some() {
+        conn.prepare(
+            "SELECT id, bead_id, created, body
+             FROM progress_entries
+             WHERE bead_id = ?1
+             ORDER BY id DESC
+             LIMIT ?2",
+        )?
+    } else {
+        conn.prepare(
+            "SELECT id, bead_id, created, body
+             FROM progress_entries
+             ORDER BY id DESC
+             LIMIT ?1",
+        )?
+    };
+
+    let rows = match bead_id {
+        Some(id) => stmt
+            .query_map(rusqlite::params![id, last], map_progress_entry)?
+            .collect::<Result<Vec<_>>>()?,
+        None => stmt
+            .query_map(rusqlite::params![last], map_progress_entry)?
+            .collect::<Result<Vec<_>>>()?,
+    };
+
+    Ok(rows)
+}
+
+/// Fetch the latest progress entry, optionally filtered by bead ID.
+pub fn latest_progress_entry(
+    conn: &Connection,
+    bead_id: Option<&str>,
+) -> Result<Option<ProgressEntry>> {
+    let rows = list_progress_entries(conn, bead_id, 1)?;
+    Ok(rows.into_iter().next())
 }
 
 /// List improvements with optional status and category filters.
@@ -1149,6 +1225,15 @@ fn map_improvement(row: &rusqlite::Row) -> Result<Improvement> {
     })
 }
 
+fn map_progress_entry(row: &rusqlite::Row) -> Result<ProgressEntry> {
+    Ok(ProgressEntry {
+        id: row.get(0)?,
+        bead_id: row.get(1)?,
+        created: row.get(2)?,
+        content: row.get(3)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1921,10 +2006,10 @@ mod tests {
     }
 
     #[test]
-    fn all_three_tables_created() {
+    fn core_tables_created() {
         let (_dir, conn) = test_db();
 
-        // Verify all three tables exist
+        // Verify core tables exist
         let tables: Vec<String> = {
             let mut stmt = conn
                 .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -1936,8 +2021,30 @@ mod tests {
         };
 
         assert!(tables.contains(&"improvements".to_string()));
+        assert!(tables.contains(&"progress_entries".to_string()));
         assert!(tables.contains(&"events".to_string()));
         assert!(tables.contains(&"observations".to_string()));
+    }
+
+    #[test]
+    fn progress_entries_insert_list_and_latest() {
+        let (_dir, conn) = test_db();
+        insert_progress_entry(&conn, Some("bd-1"), "first").unwrap();
+        insert_progress_entry(&conn, None, "no bead").unwrap();
+        insert_progress_entry(&conn, Some("bd-1"), "second").unwrap();
+
+        let all = list_progress_entries(&conn, None, 10).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].content, "second");
+        assert_eq!(all[1].content, "no bead");
+
+        let bead_only = list_progress_entries(&conn, Some("bd-1"), 10).unwrap();
+        assert_eq!(bead_only.len(), 2);
+        assert_eq!(bead_only[0].content, "second");
+        assert_eq!(bead_only[1].content, "first");
+
+        let latest = latest_progress_entry(&conn, Some("bd-1")).unwrap().unwrap();
+        assert_eq!(latest.content, "second");
     }
 
     #[test]

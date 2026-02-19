@@ -27,6 +27,7 @@ mod migrate;
 mod module_detect;
 mod pool;
 mod preflight;
+mod progress;
 mod prompt;
 mod public_api;
 mod ratelimit;
@@ -112,6 +113,11 @@ enum Commands {
     Improve {
         #[command(subcommand)]
         action: ImproveAction,
+    },
+    /// Record and view session handoff progress notes
+    Progress {
+        #[command(subcommand)]
+        action: ProgressAction,
     },
     /// View and manage session metrics
     Metrics {
@@ -372,6 +378,44 @@ enum ImproveAction {
     Search {
         /// Search query
         query: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ProgressAction {
+    /// Add a progress entry (markdown allowed)
+    Add {
+        /// Bead ID to associate (recommended)
+        #[arg(long)]
+        bead_id: Option<String>,
+
+        /// Progress body text
+        #[arg(long)]
+        body: Option<String>,
+
+        /// Read progress body from file
+        #[arg(long)]
+        file: Option<PathBuf>,
+
+        /// Read progress body from stdin
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// List recent progress entries
+    List {
+        /// Filter by bead ID
+        #[arg(long)]
+        bead_id: Option<String>,
+
+        /// Number of recent entries to show
+        #[arg(long, default_value = "10")]
+        last: i64,
+    },
+    /// Show the most recent progress entry
+    Show {
+        /// Filter by bead ID
+        #[arg(long)]
+        bead_id: Option<String>,
     },
 }
 
@@ -1494,6 +1538,37 @@ async fn main() {
         return;
     }
 
+    if let Some(Commands::Progress { action }) = &cli.command {
+        let config_for_progress = HarnessConfig::load(&cli.config).unwrap_or_default();
+        let dd = runtime_data_dir(&config_for_progress.storage.data_dir, &cli.config);
+        let db_path = dd.db();
+
+        let result = match action {
+            ProgressAction::Add {
+                bead_id,
+                body,
+                file,
+                stdin,
+            } => progress::handle_add(
+                &db_path,
+                bead_id.as_deref(),
+                body.as_deref(),
+                file.as_deref(),
+                *stdin,
+            ),
+            ProgressAction::List { bead_id, last } => {
+                progress::handle_list(&db_path, bead_id.as_deref(), *last)
+            }
+            ProgressAction::Show { bead_id } => progress::handle_show(&db_path, bead_id.as_deref()),
+        };
+
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if let Some(Commands::Metrics { action }) = &cli.command {
         let config_for_metrics = HarnessConfig::load(&cli.config).unwrap_or_default();
         let dd = runtime_data_dir(&config_for_metrics.storage.data_dir, &cli.config);
@@ -1945,6 +2020,49 @@ mod tests {
         assert!(main_items.is_empty());
         assert_eq!(worktree_items.len(), 1);
         assert_eq!(worktree_items[0].title, "worktree-local-only");
+    }
+
+    #[test]
+    fn test_progress_commands_share_db_between_main_and_worktree() {
+        let (_dir, repo, worktree) = init_repo_with_worktree();
+        let config = Path::new(".blacksmith/config.toml");
+        let storage = Path::new(".blacksmith");
+
+        let main_dd =
+            data_dir::DataDir::new(resolve_storage_data_dir_for_cwd(storage, config, &repo));
+        let worktree_dd =
+            data_dir::DataDir::new(resolve_storage_data_dir_for_cwd(storage, config, &worktree));
+        main_dd.ensure_initialized().unwrap();
+
+        progress::handle_add(
+            &main_dd.db(),
+            Some("simple-agent-harness-c34r"),
+            Some("from-main"),
+            None,
+            false,
+        )
+        .unwrap();
+        progress::handle_add(
+            &worktree_dd.db(),
+            Some("simple-agent-harness-c34r"),
+            Some("from-worktree"),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let conn_main = db::open_or_create(&main_dd.db()).unwrap();
+        let main_rows =
+            db::list_progress_entries(&conn_main, Some("simple-agent-harness-c34r"), 10).unwrap();
+        assert_eq!(main_rows.len(), 2);
+        assert_eq!(main_rows[0].content, "from-worktree");
+        assert_eq!(main_rows[1].content, "from-main");
+
+        let conn_worktree = db::open_or_create(&worktree_dd.db()).unwrap();
+        let latest = db::latest_progress_entry(&conn_worktree, Some("simple-agent-harness-c34r"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.content, "from-worktree");
     }
 
     #[test]

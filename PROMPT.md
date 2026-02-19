@@ -8,7 +8,7 @@ These two rules are NON-NEGOTIABLE. Violating them wastes 25-35% of your turn bu
 Every time you are about to call a tool, ask: "Is there another independent call I can make at the same time?" If yes, emit BOTH tool calls in the SAME message.
 
 **Mandatory parallel patterns — use these EVERY session:**
-- Session start: `bd ready` + `Read PROGRESS.txt` → ONE turn, TWO tool calls
+- Session start: `bd ready` + `blacksmith progress show --bead-id <bead-id>` → ONE turn, TWO tool calls
 - Reading source + test: `Read foo.rs` + `Read foo_test.rs` → ONE turn
 - Multiple greps: `Grep("pattern1")` + `Grep("pattern2")` → ONE turn
 - Session end: `Bash(cargo clippy --fix)` + `Bash(cargo test --release)` → ONE turn (if they don't depend on each other's output)
@@ -24,7 +24,7 @@ If you want to narrate what you're doing, include the narration AND the tool cal
 
 ### Rule C: After closing your bead, EXIT IMMEDIATELY.
 Do NOT triage other beads. Do NOT run `bd ready` to find more work. Do NOT explore what to do next.
-The sequence after closing is: write PROGRESS.txt → run `blacksmith finish` → STOP.
+The sequence after closing is: run `blacksmith progress add --bead-id <bead-id> --stdin` → run `blacksmith finish` → STOP.
 Each session handles exactly ONE bead. The loop script handles picking the next one.
 
 ---
@@ -34,10 +34,10 @@ Each session handles exactly ONE bead. The loop script handles picking the next 
 The project architecture is documented in MEMORY.md — do NOT re-explore the codebase.
 Only read files you are about to modify. Do NOT launch explore subagents (this means NO `Task` tool with `subagent_type: Explore`).
 
-1. Run `bd ready` AND `Read PROGRESS.txt` in the SAME turn (Rule A — two parallel tool calls)
+1. Run `bd ready` AND `blacksmith progress show --bead-id <bead-id>` in the SAME turn (Rule A — two parallel tool calls)
 
 ## Task Selection
-Pick ONE task from the ready queue. **Always pick the highest-priority (lowest number) ready task.** Only deviate if PROGRESS.txt explains why a specific lower-priority task should go next (e.g., it's a quick follow-up to the last session's work).
+Pick ONE task from the ready queue. **Always pick the highest-priority (lowest number) ready task.** Only deviate if progress entry explains why a specific lower-priority task should go next (e.g., it's a quick follow-up to the last session's work).
 
 **Remember Rule C**: You will work on exactly ONE task this session. After closing it, exit immediately.
 
@@ -49,7 +49,7 @@ Before claiming a task, run `bd show <id>` and check its notes for `[FAILED-ATTE
 - **2+ prior failures**: Do NOT attempt implementation. Instead, decompose the bead into smaller sub-beads:
   1. Analyze the bead description and failure notes to understand why it keeps failing
   2. Break it into 2-5 smaller sub-beads (follow the break-down-issue workflow: create children, wire deps, make original blocked-by children)
-  3. Write PROGRESS.txt noting the decomposition, then exit cleanly via `blacksmith finish`
+  3. Record a progress entry noting the decomposition, then exit cleanly via `blacksmith finish`
   4. The next session will pick up the newly-unblocked child beads
 
 If ALL top-priority ready beads have 2+ failures and you've decomposed them, move to the next priority level.
@@ -57,7 +57,7 @@ If ALL top-priority ready beads have 2+ failures and you've decomposed them, mov
 ### No Work Available
 If `bd ready` returns no tasks, exit immediately:
 1. Do NOT create any git commits
-2. Do NOT write PROGRESS.txt
+2. Do NOT run `blacksmith progress add --bead-id <bead-id> --stdin`
 3. Simply exit — the harness will handle retry/shutdown
 
 ## Execution Protocol
@@ -95,8 +95,8 @@ For the selected task (e.g., bd-X):
    **4c. Integration check:**
    Before closing, verify your changes don't break existing callers. Grep for the function/struct names you changed or renamed. If other code references them, confirm those references still work.
 
-5. **Finish** — write PROGRESS.txt and call `blacksmith finish`, then STOP (Rule C):
-   - **Write PROGRESS.txt** (overwrite, not append) with a short handoff note:
+5. **Finish** — run `blacksmith progress add --bead-id <bead-id> --stdin` and call `blacksmith finish`, then STOP (Rule C):
+   - **Record a progress entry** with a short handoff note:
      - What you completed this session
      - Current state of the codebase
      - Suggested next tasks for the next session
@@ -104,7 +104,7 @@ For the selected task (e.g., bd-X):
      ```bash
      blacksmith finish bd-X "<brief description>" src/file1.rs src/file2.rs
      ```
-     This runs quality gates (check + test), verifies bead deliverables, then handles: staging, committing, bd close, bd sync, auto-committing .beads/, appending to PROGRESS_LOG.txt, and git push — all in one command.
+     This runs quality gates (check + test), verifies bead deliverables, then handles: staging, committing, bd close, bd sync, auto-committing .beads/, appending to progress history, and git push — all in one command.
      **If quality gates fail, the bead is NOT closed.** Fix the issues and re-run.
    - If no specific files to stage, omit the file list and it will stage all tracked modified files.
    - **After `blacksmith finish` completes, STOP. Do not triage more work. Do not run bd ready. Session is done.**
@@ -115,8 +115,8 @@ You have a **hard budget of 80 assistant turns** per session. Track your turn co
 
 - **Turns 1-55**: Normal implementation. Write code, run targeted tests (`--filter`).
 - **Turns 56-65**: **Wrap-up phase.** Stop new feature work. Run the full test suite + `lint:fix` + `analyze`. If passing, commit and close.
-- **Turns 66-75**: **Emergency wrap-up.** If tests/lint are failing, make minimal fixes. If you can't fix in 10 turns, revert your changes (`git checkout -- .`), mark the failure (see below), write PROGRESS.txt, and exit cleanly.
-- **Turn 76+**: **Hard stop.** Do NOT start any new work. If you haven't committed yet: revert, mark the failure, write PROGRESS.txt, and exit immediately. An uncommitted session is worse than a cleanly abandoned one.
+- **Turns 66-75**: **Emergency wrap-up.** If tests/lint are failing, make minimal fixes. If you can't fix in 10 turns, revert your changes (`git checkout -- .`), mark the failure (see below), run `blacksmith progress add --bead-id <bead-id> --stdin`, and exit cleanly.
+- **Turn 76+**: **Hard stop.** Do NOT start any new work. If you haven't committed yet: revert, mark the failure, run `blacksmith progress add --bead-id <bead-id> --stdin`, and exit immediately. An uncommitted session is worse than a cleanly abandoned one.
 
 If you realize before turn 40 that the task is too large to complete in the remaining budget, STOP immediately. Mark the failure, and exit. Do not burn 40 more turns on a doomed session.
 
@@ -130,7 +130,7 @@ Use a specific reason: `too-large`, `tests-failing`, `lint-unfixable`, `missing-
 ## Stop Conditions
 - Complete exactly ONE task per iteration, then STOP (Rule C)
 - After calling `blacksmith finish`, do NOT continue. Do NOT triage. Do NOT run bd ready again.
-- If task cannot be completed, mark the failure (see above), write PROGRESS.txt, exit cleanly
+- If task cannot be completed, mark the failure (see above), run `blacksmith progress add --bead-id <bead-id> --stdin`, exit cleanly
 - If tests fail, debug and fix within this iteration
 
 ## Improvement Recording
