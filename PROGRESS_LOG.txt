@@ -3673,23 +3673,58 @@ Implemented three features for the self-improvement feedback loop:
 ### Suggested Next Task
 - Validate in a real multi-worker run that stale entries are automatically reaped from older DB state when `workers status` is invoked.
 
---- 2026-02-18 22:45:05 | simple-agent-harness-1d04 ---
-## Session: Shared repo-level .blacksmith resolution in worktrees (simple-agent-harness-1d04)
+--- 2026-02-18 22:44:26 | simple-agent-harness-1d04 ---
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-1d04)
 
 ### Completed
-- Added repo-shared `.blacksmith` path resolution via git common-dir detection.
-- Updated CLI config loading to rebase default `.blacksmith/config.toml` to the shared repo root when running in a worktree.
-- Updated all `DataDir` construction callsites in `main.rs` to use resolved repo-shared `.blacksmith` paths.
-- Added tests for:
-  - main checkout + worktree resolving to same `.blacksmith/blacksmith.db` location
-  - preserving explicit non-default `--config` paths
-  - preserving non-`.blacksmith` relative data paths
-- Added bead `## Verify` notes with exact commands and observed results.
+- Added runtime storage path resolution in `src/main.rs` so relative `storage.data_dir` (default `.blacksmith`) resolves against the git common repository root when using default config path `.blacksmith/config.toml`.
+- Wired all CLI command paths that construct `DataDir` to use the new resolver, including init/brief/gc/migrate/workers/arch/estimate/integration/improve/metrics/main run.
+- Updated serve command path to apply the same resolution before starting server.
+- Added tests proving:
+  - main checkout and git worktree resolve to the same `.blacksmith` path
+  - explicit non-default config path (`-c` equivalent) keeps relative storage path behavior unchanged.
+- Added bead `## Verify` notes with exact commands and expected outcomes.
 
 ### Current State
-- `src/data_dir.rs` and `src/main.rs` include shared-path resolver + coverage.
-- Full release tests passed (`cargo test --release`).
-- Clippy fix ran successfully; formatting applied.
+- `src/main.rs` contains the full implementation and tests.
+- Full release tests pass.
+- Clippy fix completed successfully.
+- Formatting differences found by `cargo fmt --check` were corrected via `cargo fmt`.
 
-### Suggested Next Tasks
-- Validate in an end-to-end manual run that `blacksmith improve add` from main checkout and worktree both surface in the same DB-backed listing.
+### Suggested Next Task
+- Continue with the remaining P0 bead: `simple-agent-harness-hyfd` (finish/integrator lifecycle redesign).
+
+--- 2026-02-18 22:50:28 | simple-agent-harness-c34r ---
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-c34r)
+
+### Completed
+- Added test coverage in `src/main.rs` proving main checkout and git worktree resolve to the same repository-level `.blacksmith` database path for improvement/progress-style add/list/show behavior.
+- New test writes improvements from both main and worktree-resolved data dirs and verifies both entries are visible from both locations.
+- Existing non-default config path behavior remains covered by `test_resolve_storage_data_dir_respects_non_default_config_path`.
+
+### Current State
+- Only `src/main.rs` was modified.
+- Verification passed: targeted test, full `cargo test --release`, `cargo clippy --fix --allow-dirty`, and `cargo fmt --check`.
+
+### Suggested Next Task
+- Continue with the next highest-priority ready bead.
+
+--- 2026-02-19 00:00:14 | simple-agent-harness-1d04 ---
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-1d04)
+
+### Completed
+- Verified existing implementation for default data-dir resolution in git worktrees already satisfies the bead requirements.
+- Confirmed targeted tests pass:
+  - `cargo test --release test_resolve_storage_data_dir_shared_between_main_and_worktree`
+  - `cargo test --release test_resolve_storage_data_dir_respects_non_default_config_path`
+- Confirmed full quality gates pass:
+  - `cargo test --release`
+  - `cargo clippy --fix --allow-dirty`
+  - `cargo fmt --check`
+
+### Current State
+- Working tree has no source diff in this session.
+- Bead is ready to close based on verified existing behavior.
+
+### Suggested Next Task
+- Continue with next highest-priority ready bead after this closure.

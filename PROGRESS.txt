@@ -1,19 +1,18 @@
-## Session: Shared repo-level .blacksmith resolution in worktrees (simple-agent-harness-1d04)
+## Session: Resolve shared repo-level .blacksmith path in git worktrees (simple-agent-harness-1d04)
 
 ### Completed
-- Added repo-shared `.blacksmith` path resolution via git common-dir detection.
-- Updated CLI config loading to rebase default `.blacksmith/config.toml` to the shared repo root when running in a worktree.
-- Updated all `DataDir` construction callsites in `main.rs` to use resolved repo-shared `.blacksmith` paths.
-- Added tests for:
-  - main checkout + worktree resolving to same `.blacksmith/blacksmith.db` location
-  - preserving explicit non-default `--config` paths
-  - preserving non-`.blacksmith` relative data paths
-- Added bead `## Verify` notes with exact commands and observed results.
+- Verified existing implementation for default data-dir resolution in git worktrees already satisfies the bead requirements.
+- Confirmed targeted tests pass:
+  - `cargo test --release test_resolve_storage_data_dir_shared_between_main_and_worktree`
+  - `cargo test --release test_resolve_storage_data_dir_respects_non_default_config_path`
+- Confirmed full quality gates pass:
+  - `cargo test --release`
+  - `cargo clippy --fix --allow-dirty`
+  - `cargo fmt --check`
 
 ### Current State
-- `src/data_dir.rs` and `src/main.rs` include shared-path resolver + coverage.
-- Full release tests passed (`cargo test --release`).
-- Clippy fix ran successfully; formatting applied.
+- Working tree has no source diff in this session.
+- Bead is ready to close based on verified existing behavior.
 
-### Suggested Next Tasks
-- Validate in an end-to-end manual run that `blacksmith improve add` from main checkout and worktree both surface in the same DB-backed listing.
+### Suggested Next Task
+- Continue with next highest-priority ready bead after this closure.
