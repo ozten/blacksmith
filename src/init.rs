@@ -129,6 +129,11 @@ check = {check}
 test = {test}
 lint = {lint}
 format = {format}
+
+# [quality_gates.coverage]
+# enabled = true
+# command = "cargo llvm-cov --json"
+# minimum_percent = 60.0
 "#,
         command = agent.command,
         args = args_str,
