@@ -144,12 +144,17 @@ fn verify_deliverables(bead_id: &str, working_dir: &Path) -> Result<(), String> 
         for line in verify.lines() {
             let trimmed = line.trim().trim_start_matches('-').trim();
             if let Some(cmd) = trimmed.strip_prefix("Run:") {
-                let cmd = strip_verify_prose(cmd);
+                let cmd = sanitize_verify_command(cmd);
                 if cmd.is_empty() {
                     continue;
                 }
+                // Skip non-executable prose commands (e.g., "manually inspect ...")
+                if looks_like_prose(&cmd) {
+                    eprintln!("  Skipping non-executable verify line: {cmd}");
+                    continue;
+                }
                 eprintln!("  Running verify command: {cmd}");
-                let result = run_gate_command(cmd, working_dir);
+                let result = run_gate_command(&cmd, working_dir);
                 if !result.success {
                     failures.push(format!("Verify command failed: {cmd}"));
                 } else {
@@ -237,6 +242,42 @@ fn strip_verify_prose(cmd: &str) -> &str {
         .next()
         .unwrap_or(cmd)
         .trim()
+}
+
+/// Sanitize a verify command extracted from a bead description.
+///
+/// Handles two common issues from markdown-formatted bead descriptions:
+/// 1. Surrounding backticks: `` `cargo test` `` → `cargo test`
+/// 2. Inline backticks that would be interpreted as command substitution by sh
+///
+/// Also delegates to `strip_verify_prose` for em-dash removal.
+fn sanitize_verify_command(cmd: &str) -> String {
+    let cmd = strip_verify_prose(cmd);
+    // Strip all backtick characters — they cause sh -c to interpret them
+    // as command substitution, breaking otherwise-valid commands.
+    let sanitized: String = cmd.chars().filter(|&c| c != '`').collect();
+    sanitized.trim().to_string()
+}
+
+/// Detect verify lines that are prose descriptions rather than executable commands.
+///
+/// Returns true for lines like "manually inspect the YAML file" or "check that the
+/// output looks correct" — these are human-readable instructions, not shell commands.
+fn looks_like_prose(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    let prose_starters = [
+        "manually",
+        "inspect",
+        "check that",
+        "verify that",
+        "confirm that",
+        "ensure that",
+        "look at",
+        "open ",
+        "review ",
+        "see that",
+    ];
+    prose_starters.iter().any(|s| lower.starts_with(s))
 }
 
 /// Run the full finish protocol:
@@ -376,9 +417,11 @@ pub fn handle_finish(
             eprintln!("[3] Committed: {full_msg}");
         }
         Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
             let stderr = String::from_utf8_lossy(&out.stderr);
-            // "nothing to commit" is OK — may happen if files were already committed
-            if stderr.contains("nothing to commit") {
+            // "nothing to commit" is OK — may happen if files were already committed.
+            // Git prints this message to stdout (not stderr).
+            if stdout.contains("nothing to commit") || stderr.contains("nothing to commit") {
                 eprintln!("[3] Nothing to commit (changes already committed)");
             } else {
                 return FinishResult {
@@ -603,6 +646,54 @@ mod tests {
         );
         // Empty after stripping
         assert_eq!(strip_verify_prose(" — just prose"), "");
+    }
+
+    #[test]
+    fn test_sanitize_verify_command_strips_backticks() {
+        // Surrounding backticks
+        assert_eq!(sanitize_verify_command(" `cargo test` "), "cargo test");
+        // Backticks with && chain
+        assert_eq!(
+            sanitize_verify_command(" `cargo build && ./target/debug/speck --help` "),
+            "cargo build && ./target/debug/speck --help"
+        );
+        // No backticks — pass-through
+        assert_eq!(
+            sanitize_verify_command(" cargo test --release "),
+            "cargo test --release"
+        );
+        // Backticks + em-dash prose
+        assert_eq!(
+            sanitize_verify_command(" `cargo test` — all tests pass"),
+            "cargo test"
+        );
+        // Only backticks
+        assert_eq!(sanitize_verify_command(" `` "), "");
+    }
+
+    #[test]
+    fn test_looks_like_prose() {
+        assert!(looks_like_prose("manually inspect the YAML file"));
+        assert!(looks_like_prose("Manually check output"));
+        assert!(looks_like_prose("check that the tests pass"));
+        assert!(looks_like_prose("verify that output is correct"));
+        assert!(looks_like_prose("inspect the generated file"));
+        assert!(looks_like_prose("open the browser and check"));
+        assert!(looks_like_prose("review the output"));
+        // Not prose — these are executable commands
+        assert!(!looks_like_prose("cargo test"));
+        assert!(!looks_like_prose("cargo build && ./bin/app --help"));
+        assert!(!looks_like_prose("./scripts/check.sh"));
+    }
+
+    #[test]
+    fn test_and_chain_works_via_sh() {
+        // Verify that && chains work through run_gate_command (uses sh -c)
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_gate_command("echo hello && echo world", dir.path());
+        assert!(result.success);
+        assert!(result.output.contains("hello"));
+        assert!(result.output.contains("world"));
     }
 
     #[test]
