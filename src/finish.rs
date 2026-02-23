@@ -5,7 +5,6 @@
 //! from closing beads without actually completing the work.
 
 use crate::config::QualityGatesConfig;
-use crate::coverage;
 use std::path::Path;
 use std::process::Command;
 
@@ -331,41 +330,6 @@ pub fn handle_finish(
     }
     eprintln!("[0b] Test gate passed\n");
 
-    // 0b½. Coverage gate (optional)
-    if gates_config.coverage.enabled {
-        eprintln!("[0b½] Running coverage collection...");
-        match coverage::run_coverage(&gates_config.coverage.command, &working_dir) {
-            Ok(result) => {
-                eprintln!("  Coverage: {result}");
-                if let Some(minimum) = gates_config.coverage.minimum_percent {
-                    if result.line_percent < minimum {
-                        eprintln!("\n=== COVERAGE GATE FAILED ===");
-                        eprintln!(
-                            "Line coverage {:.1}% is below minimum {:.1}%",
-                            result.line_percent, minimum
-                        );
-                        return FinishResult {
-                            success: false,
-                            message: format!(
-                                "coverage gate failed: line coverage {:.1}% < minimum {:.1}%",
-                                result.line_percent, minimum
-                            ),
-                        };
-                    }
-                }
-                eprintln!("[0b½] Coverage gate passed\n");
-            }
-            Err(e) => {
-                eprintln!("\n=== COVERAGE GATE FAILED ===");
-                eprintln!("{e}");
-                return FinishResult {
-                    success: false,
-                    message: format!("coverage gate failed: {e}"),
-                };
-            }
-        }
-    }
-
     // 0c. Deliverable verification
     eprintln!("[0c] Verifying bead deliverables...");
     if let Err(e) = verify_deliverables(bead_id, &working_dir) {
@@ -572,18 +536,6 @@ pub fn handle_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CoverageConfig;
-
-    /// Helper to build a QualityGatesConfig with coverage disabled.
-    fn gates(check: Vec<&str>, test: Vec<&str>) -> QualityGatesConfig {
-        QualityGatesConfig {
-            check: check.into_iter().map(String::from).collect(),
-            test: test.into_iter().map(String::from).collect(),
-            lint: vec![],
-            format: vec![],
-            coverage: CoverageConfig::default(),
-        }
-    }
 
     #[test]
     fn test_extract_section_found() {
@@ -746,115 +698,28 @@ mod tests {
 
     #[test]
     fn test_handle_finish_check_gate_failure() {
-        let g = gates(vec!["exit 1"], vec![]);
+        let gates = QualityGatesConfig {
+            check: vec!["exit 1".to_string()],
+            test: vec![],
+            lint: vec![],
+            format: vec![],
+        };
         // This tests the gate failure path (we can't test the full flow without git/bd)
-        let result = handle_finish("test-bead", "test message", &[], &g);
+        let result = handle_finish("test-bead", "test message", &[], &gates);
         assert!(!result.success);
         assert!(result.message.contains("check gate failed"));
     }
 
     #[test]
     fn test_handle_finish_test_gate_failure() {
-        let g = gates(vec!["true"], vec!["exit 1"]);
-        let result = handle_finish("test-bead", "test message", &[], &g);
+        let gates = QualityGatesConfig {
+            check: vec!["true".to_string()],
+            test: vec!["exit 1".to_string()],
+            lint: vec![],
+            format: vec![],
+        };
+        let result = handle_finish("test-bead", "test message", &[], &gates);
         assert!(!result.success);
         assert!(result.message.contains("test gate failed"));
-    }
-
-    #[test]
-    fn test_handle_finish_coverage_gate_below_minimum() {
-        let json = r#"{"data":[{"totals":{"lines":{"count":100,"covered":40,"percent":40.0},"functions":{"count":10,"covered":5,"percent":50.0},"regions":{"count":50,"covered":20,"percent":40.0}}}]}"#;
-        let g = QualityGatesConfig {
-            check: vec!["true".to_string()],
-            test: vec!["true".to_string()],
-            lint: vec![],
-            format: vec![],
-            coverage: CoverageConfig {
-                enabled: true,
-                command: format!("echo '{json}'"),
-                minimum_percent: Some(80.0),
-            },
-        };
-        let result = handle_finish("test-bead", "test msg", &[], &g);
-        assert!(!result.success);
-        assert!(result.message.contains("coverage gate failed"));
-        assert!(result.message.contains("40.0%"));
-    }
-
-    #[test]
-    fn test_handle_finish_coverage_gate_passes() {
-        let json = r#"{"data":[{"totals":{"lines":{"count":100,"covered":90,"percent":90.0},"functions":{"count":10,"covered":9,"percent":90.0},"regions":{"count":50,"covered":45,"percent":90.0}}}]}"#;
-        let g = QualityGatesConfig {
-            check: vec!["true".to_string()],
-            test: vec!["true".to_string()],
-            lint: vec![],
-            format: vec![],
-            coverage: CoverageConfig {
-                enabled: true,
-                command: format!("echo '{json}'"),
-                minimum_percent: Some(80.0),
-            },
-        };
-        // This will still fail at the deliverables/git step since we don't have a repo,
-        // but the coverage gate itself passes (message won't mention coverage)
-        let result = handle_finish("test-bead", "test msg", &[], &g);
-        assert!(!result.message.contains("coverage gate failed"));
-    }
-
-    #[test]
-    fn test_handle_finish_coverage_disabled_skipped() {
-        let g = QualityGatesConfig {
-            check: vec!["true".to_string()],
-            test: vec!["true".to_string()],
-            lint: vec![],
-            format: vec![],
-            coverage: CoverageConfig {
-                enabled: false,
-                command: "exit 1".to_string(), // would fail if run
-                minimum_percent: Some(100.0),
-            },
-        };
-        // Coverage is disabled, so even though the command would fail, it shouldn't be run.
-        // The finish will fail at the deliverables/git step, not at coverage.
-        let result = handle_finish("test-bead", "test msg", &[], &g);
-        assert!(!result.message.contains("coverage"));
-    }
-
-    #[test]
-    fn test_handle_finish_coverage_command_failure() {
-        let g = QualityGatesConfig {
-            check: vec!["true".to_string()],
-            test: vec!["true".to_string()],
-            lint: vec![],
-            format: vec![],
-            coverage: CoverageConfig {
-                enabled: true,
-                command: "exit 1".to_string(),
-                minimum_percent: None,
-            },
-        };
-        let result = handle_finish("test-bead", "test msg", &[], &g);
-        assert!(!result.success);
-        assert!(result.message.contains("coverage gate failed"));
-    }
-
-    #[test]
-    fn test_handle_finish_coverage_no_minimum_reports_only() {
-        let json = r#"{"data":[{"totals":{"lines":{"count":100,"covered":10,"percent":10.0},"functions":{"count":10,"covered":1,"percent":10.0},"regions":{"count":50,"covered":5,"percent":10.0}}}]}"#;
-        let g = QualityGatesConfig {
-            check: vec!["true".to_string()],
-            test: vec!["true".to_string()],
-            lint: vec![],
-            format: vec![],
-            coverage: CoverageConfig {
-                enabled: true,
-                command: format!("echo '{json}'"),
-                minimum_percent: None, // report only, no enforcement
-            },
-        };
-        // Coverage is low but no minimum set, so gate passes.
-        // Will fail at deliverables/git step, not at coverage.
-        let result = handle_finish("test-bead", "test msg", &[], &g);
-        assert!(!result.message.contains("coverage gate failed"));
     }
 }

@@ -6,7 +6,6 @@ mod commit;
 mod compress;
 mod config;
 mod coordinator;
-mod coverage;
 mod cycle_detect;
 mod data_dir;
 mod db;

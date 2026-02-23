@@ -678,8 +678,6 @@ pub struct QualityGatesConfig {
     pub lint: Vec<String>,
     /// Commands to check formatting. Default: `["cargo fmt --check"]`
     pub format: Vec<String>,
-    /// Code coverage configuration. Disabled by default.
-    pub coverage: CoverageConfig,
 }
 
 impl Default for QualityGatesConfig {
@@ -689,34 +687,6 @@ impl Default for QualityGatesConfig {
             test: vec!["cargo test --release".to_string()],
             lint: vec!["cargo clippy --fix --allow-dirty".to_string()],
             format: vec!["cargo fmt --check".to_string()],
-            coverage: CoverageConfig::default(),
-        }
-    }
-}
-
-/// Configuration for code coverage collection during the test quality gate.
-///
-/// When enabled, runs a coverage command after tests pass and reports
-/// line/function/region coverage. Optionally enforces a minimum threshold.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(default)]
-pub struct CoverageConfig {
-    /// Whether to collect coverage metrics. Default: false
-    pub enabled: bool,
-    /// Command to run for coverage. Must produce LLVM coverage export JSON on stdout.
-    /// Default: `"cargo llvm-cov --json"`
-    pub command: String,
-    /// Minimum line coverage percentage required (0.0–100.0). Gate fails if below.
-    /// Default: None (report only, don't enforce)
-    pub minimum_percent: Option<f64>,
-}
-
-impl Default for CoverageConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            command: "cargo llvm-cov --json".to_string(),
-            minimum_percent: None,
         }
     }
 }
@@ -2575,57 +2545,6 @@ max_iterations = 10
         let config = HarnessConfig::load(&path).unwrap();
         assert_eq!(config.quality_gates.check, vec!["cargo check --release"]);
         assert_eq!(config.quality_gates.test, vec!["cargo test --release"]);
-    }
-
-    #[test]
-    fn test_default_coverage_config() {
-        let config = HarnessConfig::default();
-        assert!(!config.quality_gates.coverage.enabled);
-        assert_eq!(
-            config.quality_gates.coverage.command,
-            "cargo llvm-cov --json"
-        );
-        assert!(config.quality_gates.coverage.minimum_percent.is_none());
-    }
-
-    #[test]
-    fn test_load_coverage_from_toml() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("blacksmith.toml");
-        std::fs::write(
-            &path,
-            r#"
-[quality_gates.coverage]
-enabled = true
-command = "cargo llvm-cov --workspace --json"
-minimum_percent = 60.0
-"#,
-        )
-        .unwrap();
-        let config = HarnessConfig::load(&path).unwrap();
-        assert!(config.quality_gates.coverage.enabled);
-        assert_eq!(
-            config.quality_gates.coverage.command,
-            "cargo llvm-cov --workspace --json"
-        );
-        assert!((config.quality_gates.coverage.minimum_percent.unwrap() - 60.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_coverage_defaults_when_not_specified() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("blacksmith.toml");
-        std::fs::write(
-            &path,
-            r#"
-[quality_gates]
-check = ["cargo check"]
-test = ["cargo test"]
-"#,
-        )
-        .unwrap();
-        let config = HarnessConfig::load(&path).unwrap();
-        assert!(!config.quality_gates.coverage.enabled);
     }
 
     // --- Improvements config tests ---
