@@ -31,7 +31,7 @@ pub fn parse_affected_set(design: &str) -> Option<Vec<String>> {
             return Some(globs);
         }
     }
-    None
+    parse_markdown_affected_files(design)
 }
 
 /// Check if two sets of file globs could potentially match the same files.
@@ -106,6 +106,78 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+fn parse_markdown_affected_files(design: &str) -> Option<Vec<String>> {
+    let mut in_affected_section = false;
+    let mut paths = Vec::new();
+
+    for line in design.lines() {
+        let trimmed = line.trim();
+
+        if is_markdown_heading(trimmed) {
+            let heading = trimmed.trim_start_matches('#').trim();
+            in_affected_section = heading.eq_ignore_ascii_case("affected files");
+            continue;
+        }
+
+        if !in_affected_section {
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(path) = parse_markdown_affected_bullet(trimmed) {
+            paths.push(path);
+        }
+    }
+
+    if paths.is_empty() { None } else { Some(paths) }
+}
+
+fn is_markdown_heading(line: &str) -> bool {
+    if !line.starts_with('#') {
+        return false;
+    }
+    let hashes = line.chars().take_while(|&c| c == '#').count();
+    line.get(hashes..)
+        .map(|rest| rest.starts_with(char::is_whitespace))
+        .unwrap_or(false)
+}
+
+fn parse_markdown_affected_bullet(line: &str) -> Option<String> {
+    let item = line
+        .strip_prefix("- ")
+        .or_else(|| line.strip_prefix("* "))
+        .or_else(|| line.strip_prefix("• "))
+        .map(str::trim)?;
+
+    let candidate = item
+        .trim_matches('`')
+        .split_once(" (")
+        .map(|(path, _)| path)
+        .unwrap_or(item)
+        .trim();
+
+    if looks_like_file_path(candidate) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+fn looks_like_file_path(s: &str) -> bool {
+    if s.contains('/') {
+        return true;
+    }
+
+    const KNOWN_EXTENSIONS: [&str; 10] = [
+        ".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".sql", ".py", ".js", ".ts",
+    ];
+
+    KNOWN_EXTENSIONS.iter().any(|ext| s.ends_with(ext))
 }
 
 // ── Scheduler types and logic ──────────────────────────────────────
@@ -275,6 +347,40 @@ mod tests {
     #[test]
     fn parse_empty_design() {
         assert_eq!(parse_affected_set(""), None);
+    }
+
+    #[test]
+    fn parse_markdown_affected_files_fallback() {
+        let design = "Task details\n\n## Affected files\n- src/scheduler.rs (modified)\n- Cargo.toml\n";
+        let result = parse_affected_set(design).unwrap();
+        assert_eq!(result, vec!["src/scheduler.rs", "Cargo.toml"]);
+    }
+
+    #[test]
+    fn explicit_affected_line_takes_precedence_over_markdown_fallback() {
+        let design = "affected: src/one.rs\n\n## Affected files\n- src/two.rs\n";
+        let result = parse_affected_set(design).unwrap();
+        assert_eq!(result, vec!["src/one.rs"]);
+    }
+
+    #[test]
+    fn parse_markdown_heading_case_insensitive_and_multiple_bullets() {
+        let design = "### Affected Files\n* src/lib.rs (new)\n• docs/spec.md (modified)\n";
+        let result = parse_affected_set(design).unwrap();
+        assert_eq!(result, vec!["src/lib.rs", "docs/spec.md"]);
+    }
+
+    #[test]
+    fn parse_markdown_fallback_ignores_non_paths() {
+        let design = "## Affected files\n- this is a note\n- changed parser behavior\n";
+        assert_eq!(parse_affected_set(design), None);
+    }
+
+    #[test]
+    fn parse_markdown_fallback_stops_at_next_heading() {
+        let design = "## Affected files\n- src/lib.rs\n## Verify\n- Run: cargo test\n";
+        let result = parse_affected_set(design).unwrap();
+        assert_eq!(result, vec!["src/lib.rs"]);
     }
 
     // ── globs_overlap tests ──
