@@ -11,6 +11,9 @@ If the session includes code implementation (or explicitly asks you to work a be
 
 These two rules are NON-NEGOTIABLE. Violating them wastes 25-35% of your turn budget.
 
+### Rule D: Use low-tool mode when the prompt already provides the working data.
+For analysis/bookkeeping tasks (for example: reviewing a provided metrics table, closing/promoting improvements, or creating beads from explicit instructions), do not explore the repo or fan out diagnostic commands unless a missing fact blocks you. Use the prompt-provided data directly and limit tool calls to the commands required to record decisions and artifacts.
+
 ### Rule A: ALWAYS batch independent tool calls in the SAME turn.
 Every time you are about to call a tool, ask: "Is there another independent call I can make at the same time?" If yes, emit BOTH tool calls in the SAME message.
 Bounded batching rule: Cap each assistant message at 2-4 tool calls (hard max 6). Do NOT fan out dozens of speculative reads/greps/commands in one turn. Batch only calls you are certain you need right now, then inspect results before issuing the next batch.
