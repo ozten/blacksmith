@@ -150,6 +150,12 @@ Record institutional lessons using `blacksmith improve add` when you encounter r
 - Obvious things already in MEMORY.md or PROMPT.md
 - Session-specific context that won't help future sessions
 
+### Evidence threshold for process-improvement analyses
+- In metrics/self-improvement analysis sessions, do not infer broad workflow trends from a single low-sample run unless the signal is extreme (for example, repeated hard failures or a clear prompt contradiction).
+- With fewer than 3 recent sessions of evidence, prefer updating or closing existing improvements instead of opening new ones.
+- If a severe uncovered issue is obvious, file at most 1 new improvement and explain why it is high-confidence despite low sample size.
+- If evidence is mixed or weak, record that more data is needed rather than adding speculative improvements.
+
 **How to record:**
 ```bash
 blacksmith improve add "Short descriptive title" \
