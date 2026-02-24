@@ -211,6 +211,8 @@ pub struct AgentConfig {
     pub coding: Option<AgentPhaseConfig>,
     /// Phase-specific config for integration tasks. Falls back to coding if omitted.
     pub integration: Option<AgentPhaseConfig>,
+    /// Phase-specific config for analysis tasks. Falls back to coding if omitted.
+    pub analysis: Option<AgentPhaseConfig>,
 }
 
 /// Phase-specific agent configuration (used in [agent.coding] and [agent.integration]).
@@ -225,6 +227,9 @@ pub struct AgentPhaseConfig {
     pub prompt_via: Option<PromptVia>,
     /// Phase-specific env overrides. Merged on top of parent [agent] env.
     pub env: Option<HashMap<String, String>>,
+    /// Optional model override. When set, `--model <value>` is appended to the
+    /// resolved args before the agent process is spawned.
+    pub model: Option<String>,
 }
 
 impl AgentConfig {
@@ -238,13 +243,18 @@ impl AgentConfig {
                 if let Some(phase_env) = &phase.env {
                     env.extend(phase_env.iter().map(|(k, v)| (k.clone(), v.clone())));
                 }
+                let mut args = phase.args.clone().unwrap_or_else(|| self.args.clone());
+                if let Some(model) = &phase.model {
+                    args.push("--model".to_string());
+                    args.push(model.clone());
+                }
                 ResolvedAgentConfig {
                     command: phase
                         .command
                         .as_deref()
                         .unwrap_or(&self.command)
                         .to_string(),
-                    args: phase.args.clone().unwrap_or_else(|| self.args.clone()),
+                    args,
                     adapter: phase.adapter.clone().or_else(|| self.adapter.clone()),
                     prompt_via: phase
                         .prompt_via
@@ -273,13 +283,49 @@ impl AgentConfig {
                 if let Some(phase_env) = &phase.env {
                     env.extend(phase_env.iter().map(|(k, v)| (k.clone(), v.clone())));
                 }
+                let mut args = phase.args.clone().unwrap_or(coding.args);
+                if let Some(model) = &phase.model {
+                    args.push("--model".to_string());
+                    args.push(model.clone());
+                }
                 ResolvedAgentConfig {
                     command: phase
                         .command
                         .as_deref()
                         .unwrap_or(&coding.command)
                         .to_string(),
-                    args: phase.args.clone().unwrap_or(coding.args),
+                    args,
+                    adapter: phase.adapter.clone().or(coding.adapter),
+                    prompt_via: phase.prompt_via.clone().unwrap_or(coding.prompt_via),
+                    env,
+                }
+            }
+            None => self.resolved_coding(),
+        }
+    }
+
+    /// Resolve the effective agent config for analysis tasks.
+    /// Falls back: [agent.analysis] → [agent.coding] → flat [agent].
+    pub fn resolved_analysis(&self) -> ResolvedAgentConfig {
+        match &self.analysis {
+            Some(phase) => {
+                let coding = self.resolved_coding();
+                let mut env = coding.env;
+                if let Some(phase_env) = &phase.env {
+                    env.extend(phase_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                }
+                let mut args = phase.args.clone().unwrap_or(coding.args);
+                if let Some(model) = &phase.model {
+                    args.push("--model".to_string());
+                    args.push(model.clone());
+                }
+                ResolvedAgentConfig {
+                    command: phase
+                        .command
+                        .as_deref()
+                        .unwrap_or(&coding.command)
+                        .to_string(),
+                    args,
                     adapter: phase.adapter.clone().or(coding.adapter),
                     prompt_via: phase.prompt_via.clone().unwrap_or(coding.prompt_via),
                     env,
@@ -703,6 +749,10 @@ pub struct ImprovementsConfig {
     pub auto_promote_after: u32,
     /// File to append promoted improvement rules to. Default: "PROMPT.md"
     pub prompt_file: PathBuf,
+    /// Spawn analysis agent every N completed sessions. 0 = disabled (default).
+    pub analyze_every: u32,
+    /// How many recent sessions to include in the analysis prompt. Default: 20.
+    pub analyze_sessions: u32,
 }
 
 impl Default for ImprovementsConfig {
@@ -710,6 +760,8 @@ impl Default for ImprovementsConfig {
         Self {
             auto_promote_after: 5,
             prompt_file: PathBuf::from("PROMPT.md"),
+            analyze_every: 0,
+            analyze_sessions: 20,
         }
     }
 }
@@ -892,7 +944,12 @@ impl HarnessConfig {
         // Validate resolved agent configs (coding + integration phases)
         let coding = self.agent.resolved_coding();
         let integration = self.agent.resolved_integration();
-        for (label, resolved) in [("coding", &coding), ("integration", &integration)] {
+        let analysis = self.agent.resolved_analysis();
+        for (label, resolved) in [
+            ("coding", &coding),
+            ("integration", &integration),
+            ("analysis", &analysis),
+        ] {
             if !resolved.command.is_empty() {
                 let cmd = Path::new(&resolved.command);
                 if cmd.is_absolute() || resolved.command.contains('/') {
@@ -1058,6 +1115,7 @@ impl Default for AgentConfig {
             env: HashMap::new(),
             coding: None,
             integration: None,
+            analysis: None,
         }
     }
 }
@@ -2224,6 +2282,55 @@ args = ["-p", "{prompt}"]
         assert_eq!(resolved.args, vec!["-p", "{prompt}"]);
         // adapter falls back to coding
         assert_eq!(resolved.adapter, Some("claude".to_string()));
+    }
+
+    #[test]
+    fn test_resolved_analysis_model_injects_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+command = "claude"
+args = ["-p", "{prompt}", "--verbose"]
+
+[agent.analysis]
+model = "claude-sonnet-4-6"
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        let resolved = config.agent.resolved_analysis();
+        // --model and the model value are appended
+        assert_eq!(
+            resolved.args,
+            vec!["-p", "{prompt}", "--verbose", "--model", "claude-sonnet-4-6"]
+        );
+    }
+
+    #[test]
+    fn test_resolved_coding_model_injects_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blacksmith.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+command = "claude"
+args = ["-p", "{prompt}"]
+
+[agent.coding]
+model = "claude-opus-4-6"
+"#,
+        )
+        .unwrap();
+        let config = HarnessConfig::load(&path).unwrap();
+        let resolved = config.agent.resolved_coding();
+        assert_eq!(
+            resolved.args,
+            vec!["-p", "{prompt}", "--model", "claude-opus-4-6"]
+        );
     }
 
     #[test]
