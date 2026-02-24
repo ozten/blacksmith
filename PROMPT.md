@@ -22,7 +22,7 @@ Bounded batching rule: Cap each assistant message at 2-4 tool calls (hard max 6)
 - Session end: `Bash(cargo clippy --fix)` + `Bash(cargo test --release)` → ONE turn (if they don't depend on each other's output)
 - Reading multiple related files: `Read config.rs` + `Read main.rs` → ONE turn
 
-**A session with ZERO parallel calls is a failure.** Target at least 5 turns with 2+ parallel calls per session.
+Use parallel calls when they reduce waiting, but do not optimize for parallel-call quotas. Prefer small batches (usually 2 calls) and keep decision points between batches so you can adapt to results.
 
 ### Rule B: Prefer narration + needed tool calls in the same turn (avoid filler tool calls).
 WRONG: "Let me check the tests." (turn 1) → `Grep(tests/)` (turn 2)
