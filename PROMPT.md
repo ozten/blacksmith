@@ -17,11 +17,12 @@ Bounded batching rule: Cap each assistant message at 2-4 tool calls (hard max 6)
 
 **A session with ZERO parallel calls is a failure.** Target at least 5 turns with 2+ parallel calls per session.
 
-### Rule B: NEVER emit a text-only turn. Every assistant message MUST include at least one tool call.
+### Rule B: Prefer narration + needed tool calls in the same turn (avoid filler tool calls).
 WRONG: "Let me check the tests." (turn 1) → `Grep(tests/)` (turn 2)
 RIGHT: "Let me check the tests." + `Grep(tests/)` (turn 1 — one message, includes both text AND tool call)
+ALSO RIGHT: Short planning/synthesis message with no tool call when choosing the next batch or summarizing results before the next action.
 
-If you want to narrate what you're doing, include the narration AND the tool call in the same message. A text-only turn doubles your turn count for zero benefit.
+If you want to narrate what you're doing, combine the narration with the tool call you were already going to make. Do NOT add extra or unrelated tool calls just to satisfy this rule. Use brief text-only messages only when they reduce churn (for example, choosing the next batch after inspecting results).
 
 ### Rule C: After closing your bead, EXIT IMMEDIATELY.
 Do NOT triage other beads. Do NOT run `bd ready` to find more work. Do NOT explore what to do next.
@@ -176,4 +177,4 @@ Record improvements as you work — don't batch them to the end of the session.
 - Always run `cargo clippy --fix --allow-dirty` then `cargo fmt` before committing — exactly ONCE each
 - Always use `blacksmith finish` to close out — do NOT manually run git add/commit/push/bd close/bd sync
 - **NEVER call `bd close` directly** — always go through `blacksmith finish` which enforces quality gates
-- **EFFICIENCY**: Re-read Rules A, B, C above. Every text-only turn and every sequential-when-parallel tool call wastes your limited turn budget. Aim for 5+ parallel turns per session and 0 narration-only turns.
+- **EFFICIENCY**: Re-read Rules A, B, C above. Minimize avoidable text-only turns and sequential-when-parallel tool calls. Aim for 5+ parallel turns per session, while using short planning/synthesis text-only turns only when they help choose the next batch cleanly.
