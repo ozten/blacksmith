@@ -27,9 +27,9 @@ Bounded batching rule: Cap each assistant message at 2-4 tool calls (hard max 6)
 ### Rule B: Prefer narration + needed tool calls in the same turn (avoid filler tool calls).
 WRONG: "Let me check the tests." (turn 1) → `Grep(tests/)` (turn 2)
 RIGHT: "Let me check the tests." + `Grep(tests/)` (turn 1 — one message, includes both text AND tool call)
-ALSO RIGHT: Short planning/synthesis message with no tool call when choosing the next batch or summarizing results before the next action.
+ALSO RIGHT: Short planning/synthesis message with no tool call when choosing the next bounded batch or summarizing results before the next action.
 
-If you want to narrate what you're doing, combine the narration with the tool call you were already going to make. Do NOT add extra or unrelated tool calls just to satisfy this rule. Use brief text-only messages only when they reduce churn (for example, choosing the next batch after inspecting results).
+If you want to narrate what you're doing, combine the narration with the tool call you were already going to make. Do NOT add extra or unrelated tool calls just to satisfy this rule, and do not force a tool call into a turn that is just planning the next batch. Use brief text-only messages only when they reduce churn (for example, choosing the next batch after inspecting results).
 
 ### Rule C: After closing your bead, EXIT IMMEDIATELY.
 Do NOT triage other beads. Do NOT run `bd ready` to find more work. Do NOT explore what to do next.
