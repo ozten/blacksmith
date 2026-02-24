@@ -211,6 +211,13 @@ impl WorkerPool {
             .collect()
     }
 
+    /// Get the current bead ID assigned to a worker slot, if any.
+    pub fn worker_bead_id(&self, worker_id: u32) -> Option<&str> {
+        self.workers
+            .get(worker_id as usize)
+            .and_then(|w| w.bead_id.as_deref())
+    }
+
     /// Returns true when there is exactly one worker slot (single-agent mode).
     ///
     /// In single-agent mode the worker runs directly in the repo directory

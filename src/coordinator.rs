@@ -132,6 +132,8 @@ pub async fn run(
     let mut consecutive_rapid_failures = 0u32;
     let mut previous_dependency_filter_counts: Option<(usize, usize)> = None;
     let mut total_completed_sessions: u32 = 0;
+    let mut draining = false;
+    let mut drain_reason: Option<CoordinatorExitReason> = None;
     const MAX_CONSECUTIVE_NO_WORK: u32 = 3;
     const MAX_CONSECUTIVE_QUOTA_FAILURES: u32 = 2;
 
@@ -203,16 +205,15 @@ pub async fn run(
         if signals
             .check_stop_file(&config.shutdown.stop_file)
             .is_detected()
-        {
-            tracing::info!("STOP file detected, stopping coordinator");
-            status.update(HarnessState::ShuttingDown);
-            status.remove();
-            return CoordinatorSummary {
-                completed_beads,
-                failed_beads,
-                exit_reason: CoordinatorExitReason::StopFile,
-            };
-        }
+            && !draining {
+                draining = true;
+                drain_reason = Some(CoordinatorExitReason::StopFile);
+                status.update(HarnessState::ShuttingDown);
+                tracing::info!(
+                    active_workers = pool.active_count(),
+                    "STOP file detected, draining active workers"
+                );
+            }
 
         // Poll for completed workers
         let outcomes = pool.poll_completed().await;
@@ -463,43 +464,41 @@ pub async fn run(
                         if let Err(e) = pool.reset_worker(worker_id) {
                             tracing::warn!(error = %e, worker_id, "failed to reset worker after integration");
                         }
+                    } else if is_analysis {
+                        // Analysis integration failure: just log and reset, don't trip circuit breaker
+                        tracing::warn!(
+                            worker_id,
+                            bead_id = %bead_id,
+                            reason = ?result.failure_reason,
+                            "analysis agent integration failed"
+                        );
+                        if let Err(e) = pool.reset_worker(worker_id) {
+                            tracing::warn!(error = %e, worker_id, "failed to reset worker after analysis integration failure");
+                        }
                     } else {
-                        if is_analysis {
-                            // Analysis integration failure: just log and reset, don't trip circuit breaker
+                        let error_summary =
+                            result.failure_reason.as_deref().unwrap_or("unknown error");
+
+                        // Check if the circuit breaker has tripped (integrate() already recorded attempts)
+                        if let Some(tripped) =
+                            circuit_breaker.check_tripped(&bead_id, error_summary, &worktree_path)
+                        {
+                            // Circuit breaker tripped — escalate to human review
+                            failed_beads += 1;
+                            handle_tripped_failure(&tripped);
+                            // Do NOT reset the worker — worktree is preserved for inspection
+                            // Do NOT clean up the worktree
+                        } else {
                             tracing::warn!(
                                 worker_id,
                                 bead_id = %bead_id,
                                 reason = ?result.failure_reason,
-                                "analysis agent integration failed"
+                                state = %circuit_breaker.state(&bead_id),
+                                "integration failed, retries remain"
                             );
+                            // Reset the worker back to idle so it can retry
                             if let Err(e) = pool.reset_worker(worker_id) {
-                                tracing::warn!(error = %e, worker_id, "failed to reset worker after analysis integration failure");
-                            }
-                        } else {
-                            let error_summary =
-                                result.failure_reason.as_deref().unwrap_or("unknown error");
-
-                            // Check if the circuit breaker has tripped (integrate() already recorded attempts)
-                            if let Some(tripped) =
-                                circuit_breaker.check_tripped(&bead_id, error_summary, &worktree_path)
-                            {
-                                // Circuit breaker tripped — escalate to human review
-                                failed_beads += 1;
-                                handle_tripped_failure(&tripped);
-                                // Do NOT reset the worker — worktree is preserved for inspection
-                                // Do NOT clean up the worktree
-                            } else {
-                                tracing::warn!(
-                                    worker_id,
-                                    bead_id = %bead_id,
-                                    reason = ?result.failure_reason,
-                                    state = %circuit_breaker.state(&bead_id),
-                                    "integration failed, retries remain"
-                                );
-                                // Reset the worker back to idle so it can retry
-                                if let Err(e) = pool.reset_worker(worker_id) {
-                                    tracing::warn!(error = %e, worker_id, "failed to reset worker after integration failure");
-                                }
+                                tracing::warn!(error = %e, worker_id, "failed to reset worker after integration failure");
                             }
                         }
                     }
@@ -511,7 +510,7 @@ pub async fn run(
         check_and_process_expand_files(&pool, &db_conn);
 
         // If we have idle workers, try to schedule work
-        if pool.idle_count() > 0 {
+        if !draining && pool.idle_count() > 0 {
             // Gather in-progress assignments for the scheduler
             let in_progress = build_in_progress_list(&pool, &db_conn);
 
@@ -681,12 +680,36 @@ pub async fn run(
         }
 
         // Update status between poll cycles
-        if pool.active_count() == 0 {
+        if draining {
+            tracing::info!(
+                active_workers = pool.active_count(),
+                completed_pending_integration = pool.completed_workers().len(),
+                integrating = pool.has_integrating(),
+                "draining coordinator"
+            );
+        }
+
+        if !draining && pool.active_count() == 0 {
             status.update(HarnessState::Idle);
         }
 
         // Sleep before next poll cycle
         tokio::time::sleep(Duration::from_secs(2)).await;
+
+        if draining
+            && pool.active_count() == 0
+            && !pool.has_integrating()
+            && pool.completed_workers().is_empty()
+        {
+            status.remove();
+            return CoordinatorSummary {
+                completed_beads,
+                failed_beads,
+                exit_reason: drain_reason
+                    .take()
+                    .unwrap_or(CoordinatorExitReason::StopFile),
+            };
+        }
     }
 }
 
@@ -718,7 +741,7 @@ fn should_spawn_analysis(
     if analysis_running {
         return false;
     }
-    total_sessions > 0 && total_sessions % every == 0
+    total_sessions > 0 && total_sessions.is_multiple_of(every)
 }
 
 /// Assemble the analysis prompt with metrics data and open improvements.
