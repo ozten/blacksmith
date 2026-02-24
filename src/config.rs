@@ -2305,7 +2305,13 @@ model = "claude-sonnet-4-6"
         // --model and the model value are appended
         assert_eq!(
             resolved.args,
-            vec!["-p", "{prompt}", "--verbose", "--model", "claude-sonnet-4-6"]
+            vec![
+                "-p",
+                "{prompt}",
+                "--verbose",
+                "--model",
+                "claude-sonnet-4-6"
+            ]
         );
     }
 

@@ -10,7 +10,6 @@ use crate::config::HarnessConfig;
 use crate::cycle_detect;
 use crate::data_dir::DataDir;
 use crate::db;
-use crate::defaults;
 use crate::estimation::{self, BeadNode};
 use crate::improve;
 use crate::ingest;
@@ -29,6 +28,7 @@ use tokio::time::Duration;
 
 /// Well-known filename that agents write to request affected set expansion.
 const EXPAND_FILE_NAME: &str = ".blacksmith-expand";
+const DEFAULT_ANALYSIS_PROMPT: &str = include_str!("../defaults/ANALYSIS_PROMPT.md");
 
 /// Summary of a coordinator run.
 #[derive(Debug)]
@@ -187,6 +187,9 @@ pub async fn run(
         _ => {}
     }
 
+    let mut draining = false;
+    let mut drain_reason: Option<CoordinatorExitReason> = None;
+
     loop {
         // Check for shutdown signals
         if signals.shutdown_requested() {
@@ -200,18 +203,21 @@ pub async fn run(
             };
         }
 
-        if signals
-            .check_stop_file(&config.shutdown.stop_file)
-            .is_detected()
-        {
-            tracing::info!("STOP file detected, stopping coordinator");
+        if !draining && config.shutdown.stop_file.exists() {
+            if let Err(e) = std::fs::remove_file(&config.shutdown.stop_file) {
+                tracing::warn!(
+                    path = %config.shutdown.stop_file.display(),
+                    error = %e,
+                    "failed to delete STOP file"
+                );
+            }
+            draining = true;
+            drain_reason = Some(CoordinatorExitReason::StopFile);
+            tracing::info!(
+                active_workers = pool.active_count(),
+                "STOP file detected, draining active workers"
+            );
             status.update(HarnessState::ShuttingDown);
-            status.remove();
-            return CoordinatorSummary {
-                completed_beads,
-                failed_beads,
-                exit_reason: CoordinatorExitReason::StopFile,
-            };
         }
 
         // Poll for completed workers
@@ -463,43 +469,41 @@ pub async fn run(
                         if let Err(e) = pool.reset_worker(worker_id) {
                             tracing::warn!(error = %e, worker_id, "failed to reset worker after integration");
                         }
+                    } else if is_analysis {
+                        // Analysis integration failure: just log and reset, don't trip circuit breaker
+                        tracing::warn!(
+                            worker_id,
+                            bead_id = %bead_id,
+                            reason = ?result.failure_reason,
+                            "analysis agent integration failed"
+                        );
+                        if let Err(e) = pool.reset_worker(worker_id) {
+                            tracing::warn!(error = %e, worker_id, "failed to reset worker after analysis integration failure");
+                        }
                     } else {
-                        if is_analysis {
-                            // Analysis integration failure: just log and reset, don't trip circuit breaker
+                        let error_summary =
+                            result.failure_reason.as_deref().unwrap_or("unknown error");
+
+                        // Check if the circuit breaker has tripped (integrate() already recorded attempts)
+                        if let Some(tripped) =
+                            circuit_breaker.check_tripped(&bead_id, error_summary, &worktree_path)
+                        {
+                            // Circuit breaker tripped — escalate to human review
+                            failed_beads += 1;
+                            handle_tripped_failure(&tripped);
+                            // Do NOT reset the worker — worktree is preserved for inspection
+                            // Do NOT clean up the worktree
+                        } else {
                             tracing::warn!(
                                 worker_id,
                                 bead_id = %bead_id,
                                 reason = ?result.failure_reason,
-                                "analysis agent integration failed"
+                                state = %circuit_breaker.state(&bead_id),
+                                "integration failed, retries remain"
                             );
+                            // Reset the worker back to idle so it can retry
                             if let Err(e) = pool.reset_worker(worker_id) {
-                                tracing::warn!(error = %e, worker_id, "failed to reset worker after analysis integration failure");
-                            }
-                        } else {
-                            let error_summary =
-                                result.failure_reason.as_deref().unwrap_or("unknown error");
-
-                            // Check if the circuit breaker has tripped (integrate() already recorded attempts)
-                            if let Some(tripped) =
-                                circuit_breaker.check_tripped(&bead_id, error_summary, &worktree_path)
-                            {
-                                // Circuit breaker tripped — escalate to human review
-                                failed_beads += 1;
-                                handle_tripped_failure(&tripped);
-                                // Do NOT reset the worker — worktree is preserved for inspection
-                                // Do NOT clean up the worktree
-                            } else {
-                                tracing::warn!(
-                                    worker_id,
-                                    bead_id = %bead_id,
-                                    reason = ?result.failure_reason,
-                                    state = %circuit_breaker.state(&bead_id),
-                                    "integration failed, retries remain"
-                                );
-                                // Reset the worker back to idle so it can retry
-                                if let Err(e) = pool.reset_worker(worker_id) {
-                                    tracing::warn!(error = %e, worker_id, "failed to reset worker after integration failure");
-                                }
+                                tracing::warn!(error = %e, worker_id, "failed to reset worker after integration failure");
                             }
                         }
                     }
@@ -511,7 +515,7 @@ pub async fn run(
         check_and_process_expand_files(&pool, &db_conn);
 
         // If we have idle workers, try to schedule work
-        if pool.idle_count() > 0 {
+        if !draining && pool.idle_count() > 0 {
             // Gather in-progress assignments for the scheduler
             let in_progress = build_in_progress_list(&pool, &db_conn);
 
@@ -580,8 +584,7 @@ pub async fn run(
 
             // Reserve one idle slot for the analysis agent when it's due,
             // so coding beads don't starve it of workers.
-            let analysis_due =
-                should_spawn_analysis(config, total_completed_sessions, &pool);
+            let analysis_due = should_spawn_analysis(config, total_completed_sessions, &pool);
             let coding_slots = if analysis_due {
                 (pool.idle_count() as usize).saturating_sub(1)
             } else {
@@ -681,12 +684,51 @@ pub async fn run(
         }
 
         // Update status between poll cycles
-        if pool.active_count() == 0 {
+        if !draining && pool.active_count() == 0 {
             status.update(HarnessState::Idle);
+        }
+
+        if draining {
+            let completed_pending_integration = pool.completed_workers().len();
+            tracing::info!(
+                active_workers = pool.active_count(),
+                completed_pending_integration,
+                integrating = pool.has_integrating(),
+                "draining coordinator"
+            );
+
+            if pool.active_count() == 0
+                && !pool.has_integrating()
+                && pool.completed_workers().is_empty()
+            {
+                status.remove();
+                return CoordinatorSummary {
+                    completed_beads,
+                    failed_beads,
+                    exit_reason: drain_reason
+                        .take()
+                        .unwrap_or(CoordinatorExitReason::StopFile),
+                };
+            }
         }
 
         // Sleep before next poll cycle
         tokio::time::sleep(Duration::from_secs(2)).await;
+
+        if draining
+            && pool.active_count() == 0
+            && !pool.has_integrating()
+            && pool.completed_workers().is_empty()
+        {
+            status.remove();
+            return CoordinatorSummary {
+                completed_beads,
+                failed_beads,
+                exit_reason: drain_reason
+                    .take()
+                    .unwrap_or(CoordinatorExitReason::StopFile),
+            };
+        }
     }
 }
 
@@ -701,24 +743,19 @@ fn is_analysis_bead(id: &str) -> bool {
 ///
 /// Returns false if disabled, if an analysis worker is already running in the pool,
 /// or if the session count hasn't hit the configured interval.
-fn should_spawn_analysis(
-    config: &HarnessConfig,
-    total_sessions: u32,
-    pool: &WorkerPool,
-) -> bool {
+fn should_spawn_analysis(config: &HarnessConfig, total_sessions: u32, pool: &WorkerPool) -> bool {
     let every = config.improvements.analyze_every;
     if every == 0 {
         return false; // disabled
     }
     // Check if an analysis worker is already running in the pool
     let analysis_running = pool.snapshot().iter().any(|(_, state, bead_id)| {
-        *state == crate::pool::WorkerState::Coding
-            && bead_id.map(is_analysis_bead).unwrap_or(false)
+        *state == crate::pool::WorkerState::Coding && bead_id.map(is_analysis_bead).unwrap_or(false)
     });
     if analysis_running {
         return false;
     }
-    total_sessions > 0 && total_sessions % every == 0
+    total_sessions > 0 && total_sessions.is_multiple_of(every)
 }
 
 /// Assemble the analysis prompt with metrics data and open improvements.
@@ -730,9 +767,10 @@ fn assemble_analysis_prompt(
     // Load template: custom file in .blacksmith/ or embedded default
     let custom_path = data_dir.root().join("ANALYSIS_PROMPT.md");
     let template = if custom_path.exists() {
-        std::fs::read_to_string(&custom_path).unwrap_or_else(|_| defaults::ANALYSIS_PROMPT.to_string())
+        std::fs::read_to_string(&custom_path)
+            .unwrap_or_else(|_| DEFAULT_ANALYSIS_PROMPT.to_string())
     } else {
-        defaults::ANALYSIS_PROMPT.to_string()
+        DEFAULT_ANALYSIS_PROMPT.to_string()
     };
 
     // Query recent observations
@@ -747,14 +785,7 @@ fn assemble_analysis_prompt(
     } else {
         improvements
             .iter()
-            .map(|imp| {
-                format!(
-                    "- [{}] {}: {}",
-                    imp.ref_id,
-                    imp.category,
-                    imp.title
-                )
-            })
+            .map(|imp| format!("- [{}] {}: {}", imp.ref_id, imp.category, imp.title))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -783,10 +814,7 @@ fn format_observations_table(observations: &[db::Observation]) -> String {
             .duration
             .map(|d| d.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let outcome = obs
-            .outcome
-            .as_deref()
-            .unwrap_or("-");
+        let outcome = obs.outcome.as_deref().unwrap_or("-");
         // Truncate data to keep the table readable
         let data = if obs.data.len() > 120 {
             format!("{}...", &obs.data[..120])
@@ -1746,17 +1774,6 @@ fn handle_tripped_failure(tripped: &TrippedFailure) {
                 "failed to run bd update command"
             );
         }
-    }
-}
-
-/// Extension trait for StopFileStatus (same as in runner.rs).
-trait StopFileStatusExt {
-    fn is_detected(&self) -> bool;
-}
-
-impl StopFileStatusExt for crate::signals::StopFileStatus {
-    fn is_detected(&self) -> bool {
-        *self == crate::signals::StopFileStatus::Detected
     }
 }
 
@@ -3263,15 +3280,7 @@ mod tests {
         }
 
         // Insert an open improvement
-        db::insert_improvement(
-            &db_conn,
-            "workflow",
-            "Batch file reads",
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        db::insert_improvement(&db_conn, "workflow", "Batch file reads", None, None, None).unwrap();
 
         let mut config = test_config(dir.path());
         config.improvements.analyze_sessions = 20;
@@ -3309,15 +3318,13 @@ mod tests {
 
     #[test]
     fn test_format_observations_table_with_data() {
-        let obs = vec![
-            db::Observation {
-                session: 1,
-                ts: "2026-02-20T10:00:00Z".to_string(),
-                duration: Some(300),
-                outcome: Some("success".to_string()),
-                data: r#"{"turns.total": 50}"#.to_string(),
-            },
-        ];
+        let obs = vec![db::Observation {
+            session: 1,
+            ts: "2026-02-20T10:00:00Z".to_string(),
+            duration: Some(300),
+            outcome: Some("success".to_string()),
+            data: r#"{"turns.total": 50}"#.to_string(),
+        }];
         let table = format_observations_table(&obs);
         assert!(table.contains("| Session |"));
         assert!(table.contains("| 1 |"));
@@ -3328,7 +3335,10 @@ mod tests {
     #[test]
     fn test_chrono_timestamp_is_numeric() {
         let ts = chrono_timestamp();
-        assert!(ts.parse::<u64>().is_ok(), "timestamp should be numeric: {ts}");
+        assert!(
+            ts.parse::<u64>().is_ok(),
+            "timestamp should be numeric: {ts}"
+        );
     }
 
     // ── Runaway analysis loop regression tests ───────────────────────
@@ -3470,8 +3480,7 @@ mod tests {
 
         // After 1 coding session, analysis is due
         let total_completed_sessions = 1;
-        let analysis_due =
-            should_spawn_analysis(&config, total_completed_sessions, &pool);
+        let analysis_due = should_spawn_analysis(&config, total_completed_sessions, &pool);
         assert!(analysis_due);
 
         // With 1 idle worker and analysis_due, coding_slots should be 0
@@ -3482,7 +3491,10 @@ mod tests {
             pool.idle_count() as usize
         };
         assert_eq!(pool.idle_count(), 1);
-        assert_eq!(coding_slots, 0, "single slot should be reserved for analysis");
+        assert_eq!(
+            coding_slots, 0,
+            "single slot should be reserved for analysis"
+        );
 
         // After analysis completes (counter unchanged), if there are no new
         // coding completions, counter stays at 1 and analysis_due stays true.
@@ -3508,8 +3520,7 @@ mod tests {
         config.improvements.analyze_every = 1;
 
         let total_completed_sessions = 1;
-        let analysis_due =
-            should_spawn_analysis(&config, total_completed_sessions, &pool);
+        let analysis_due = should_spawn_analysis(&config, total_completed_sessions, &pool);
         assert!(analysis_due);
 
         let coding_slots = if analysis_due {
@@ -3518,7 +3529,10 @@ mod tests {
             pool.idle_count() as usize
         };
         assert_eq!(pool.idle_count(), 2);
-        assert_eq!(coding_slots, 1, "one slot for coding, one reserved for analysis");
+        assert_eq!(
+            coding_slots, 1,
+            "one slot for coding, one reserved for analysis"
+        );
     }
 
     /// Prove that should_spawn_analysis returns false at session 0,
@@ -3635,5 +3649,4 @@ mod tests {
             "analysis should trigger after a real coding session"
         );
     }
-
 }
