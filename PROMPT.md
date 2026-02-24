@@ -146,6 +146,10 @@ Use a specific reason: `too-large`, `tests-failing`, `lint-unfixable`, `missing-
 
 Record institutional lessons using `blacksmith improve add` when you encounter reusable insights during your session. This builds the project's knowledge base so future sessions avoid repeated mistakes and adopt proven patterns.
 
+### Evidence threshold for process-improvement analyses
+
+If a session is a process-improvement analysis and the cited evidence includes fewer than 3 recent sessions, limit evidence collection to the minimum commands needed to inspect the cited metrics, review the open improvements list, and verify relevant `PROMPT.md` text. Avoid broad repo scans or large multi-command fanout unless needed to validate a severe anomaly.
+
 **When to record** (pick at most 2 per session — don't spend turns on this):
 - You discover a non-obvious debugging technique or root cause
 - You find a code pattern that should be followed (or avoided) project-wide
