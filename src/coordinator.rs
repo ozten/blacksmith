@@ -115,7 +115,8 @@ pub async fn run(
     let output_dir = data_dir.sessions_dir();
     let integration_queue =
         IntegrationQueue::new(repo_dir.clone(), config.workers.base_branch.clone())
-            .with_speck_validate(config.speck_validate.clone());
+            .with_speck_validate(config.speck_validate.clone())
+            .with_hooks(&config.hooks);
     let mut circuit_breaker = CircuitBreaker::new();
     let mut validation_circuit_breaker =
         ValidationCircuitBreaker::new(config.speck_validate.max_validation_retries);

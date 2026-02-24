@@ -10,8 +10,9 @@
 ///
 /// Only one integration runs at a time to keep main's history linear.
 /// Workers continue coding while one task integrates.
-use crate::config::{ResolvedAgentConfig, SpeckValidateConfig};
+use crate::config::{HooksConfig, ResolvedAgentConfig, SpeckValidateConfig};
 use crate::db;
+use crate::hooks::{HookEnv, HookRunner};
 use crate::task_manifest;
 use crate::worktree;
 use rusqlite::Connection;
@@ -588,6 +589,8 @@ pub struct IntegrationQueue {
     base_branch: String,
     /// Configuration for the speck validate gate.
     speck_validate: SpeckValidateConfig,
+    /// Post-integration hook runner.
+    hooks: HookRunner,
 }
 
 impl IntegrationQueue {
@@ -597,12 +600,23 @@ impl IntegrationQueue {
             repo_dir,
             base_branch,
             speck_validate: SpeckValidateConfig::default(),
+            hooks: HookRunner::new(Vec::new(), Vec::new()),
         }
     }
 
     /// Configure the speck validate pre-integration gate.
     pub fn with_speck_validate(mut self, config: SpeckValidateConfig) -> Self {
         self.speck_validate = config;
+        self
+    }
+
+    /// Configure hooks used during integration lifecycle.
+    pub fn with_hooks(mut self, hooks: &HooksConfig) -> Self {
+        self.hooks = HookRunner::new(hooks.pre_session.clone(), hooks.post_session.clone())
+            .with_post_integration(
+                hooks.post_integration.clone(),
+                hooks.post_integration_timeout_secs,
+            );
         self
     }
 
@@ -957,6 +971,8 @@ impl IntegrationQueue {
             _ => format!("integration: merged {bead_id} at {worktree_head}"),
         };
         close_bead_in_bd(bead_id, &close_reason);
+
+        self.hooks.run_post_integration(&HookEnv::post_integration(bead_id, &worktree_head));
 
         // Sync working tree to match the updated ref
         if let Err(e) = self.sync_working_tree() {
@@ -1929,6 +1945,55 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(wa.status, "integrated");
+    }
+
+    #[test]
+    fn test_successful_integration_runs_post_integration_hook() {
+        let dir = init_test_repo();
+        let repo_dir = dir.path();
+        let wt_dir = repo_dir.join("worktrees");
+        std::fs::create_dir_all(&wt_dir).unwrap();
+
+        let db_path = repo_dir.join("test.db");
+        let conn = db::open_or_create(&db_path).unwrap();
+        let assignment_id = db::insert_worker_assignment(
+            &conn,
+            0,
+            "beads-hook",
+            "/tmp/wt-hook",
+            "completed",
+            None,
+        )
+        .unwrap();
+        let wt_path = create_worktree_with_commit(repo_dir, &wt_dir, 0, "beads-hook");
+        let hook_output = repo_dir.join("post_integration_env.txt");
+
+        let hooks = HooksConfig {
+            post_integration: vec![format!(
+                "printf '%s:%s' \"$BLACKSMITH_INTEGRATED_BEAD\" \"$BLACKSMITH_MAIN_COMMIT\" > {}",
+                hook_output.display()
+            )],
+            ..HooksConfig::default()
+        };
+        let queue = IntegrationQueue::new(repo_dir.to_path_buf(), "main".to_string()).with_hooks(&hooks);
+        let mut cb = CircuitBreaker::new();
+        let mut vcb = ValidationCircuitBreaker::new(2);
+
+        let result = queue.integrate(
+            0,
+            assignment_id,
+            "beads-hook",
+            &wt_path,
+            &conn,
+            None,
+            &mut cb,
+            &mut vcb,
+        );
+
+        assert!(result.success, "integration should succeed");
+        let contents = std::fs::read_to_string(&hook_output).unwrap();
+        let commit = result.merge_commit.unwrap();
+        assert_eq!(contents, format!("beads-hook:{commit}"));
     }
 
     #[test]

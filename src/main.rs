@@ -1742,6 +1742,14 @@ async fn main() {
         println!("  hooks.pre_session = {:?}", config.hooks.pre_session);
         println!("  hooks.post_session = {:?}", config.hooks.post_session);
         println!(
+            "  hooks.post_integration = {:?}",
+            config.hooks.post_integration
+        );
+        println!(
+            "  hooks.post_integration_timeout_secs = {}",
+            config.hooks.post_integration_timeout_secs
+        );
+        println!(
             "  prompt.file = {:?}",
             config.prompt.file.as_ref().map(|p| p.display().to_string())
         );

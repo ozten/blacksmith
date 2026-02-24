@@ -5,11 +5,15 @@
 /// output file paths, exit codes, etc.).
 use std::collections::HashMap;
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// Executes pre- and post-session shell hooks with appropriate environment variables.
 pub struct HookRunner {
     pre_session: Vec<String>,
     post_session: Vec<String>,
+    post_integration: Vec<String>,
+    post_integration_timeout_secs: u64,
 }
 
 /// Environment variables available to hooks.
@@ -62,6 +66,17 @@ impl HookEnv {
         vars.insert("HARNESS_COMMITTED".to_string(), committed.to_string());
         Self { vars }
     }
+
+    /// Create environment for post-integration hooks.
+    pub fn post_integration(bead_id: &str, main_commit: &str) -> Self {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "BLACKSMITH_INTEGRATED_BEAD".to_string(),
+            bead_id.to_string(),
+        );
+        vars.insert("BLACKSMITH_MAIN_COMMIT".to_string(), main_commit.to_string());
+        Self { vars }
+    }
 }
 
 /// Error from hook execution.
@@ -78,6 +93,8 @@ pub enum HookErrorKind {
     NonZeroExit,
     /// Failed to spawn the hook process.
     SpawnFailed(std::io::Error),
+    /// Hook process timed out and was killed.
+    Timeout { timeout_secs: u64 },
 }
 
 impl std::fmt::Display for HookError {
@@ -91,6 +108,11 @@ impl std::fmt::Display for HookError {
             HookErrorKind::SpawnFailed(e) => {
                 write!(f, "failed to spawn hook command '{}': {}", self.command, e)
             }
+            HookErrorKind::Timeout { timeout_secs } => write!(
+                f,
+                "hook command timed out after {}s and was killed: {}",
+                timeout_secs, self.command
+            ),
         }
     }
 }
@@ -103,7 +125,20 @@ impl HookRunner {
         Self {
             pre_session,
             post_session,
+            post_integration: Vec::new(),
+            post_integration_timeout_secs: 60,
         }
+    }
+
+    /// Configure post-integration hooks and timeout.
+    pub fn with_post_integration(
+        mut self,
+        post_integration: Vec<String>,
+        post_integration_timeout_secs: u64,
+    ) -> Self {
+        self.post_integration = post_integration;
+        self.post_integration_timeout_secs = post_integration_timeout_secs;
+        self
     }
 
     /// Run all pre-session hooks. Returns Err on first failure (non-zero exit or spawn error).
@@ -123,6 +158,22 @@ impl HookRunner {
             tracing::info!(hook = "post_session", command = %cmd, "running hook");
             if let Err(e) = run_hook_command(cmd, env) {
                 tracing::error!(hook = "post_session", error = %e, "post-session hook failed");
+            }
+        }
+    }
+
+    /// Run all post-integration hooks. Failures and timeouts are warnings and non-fatal.
+    pub fn run_post_integration(&self, env: &HookEnv) {
+        for cmd in &self.post_integration {
+            tracing::info!(hook = "post_integration", command = %cmd, "running hook");
+            if let Err(e) =
+                run_hook_command_with_timeout(cmd, env, self.post_integration_timeout_secs)
+            {
+                tracing::warn!(
+                    hook = "post_integration",
+                    error = %e,
+                    "post-integration hook failed"
+                );
             }
         }
     }
@@ -156,6 +207,61 @@ fn run_hook_command(command: &str, env: &HookEnv) -> Result<(), HookError> {
             exit_code: None,
             kind: HookErrorKind::SpawnFailed(e),
         }),
+    }
+}
+
+fn run_hook_command_with_timeout(
+    command: &str,
+    env: &HookEnv,
+    timeout_secs: u64,
+) -> Result<(), HookError> {
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .envs(&env.vars)
+        .spawn()
+        .map_err(|e| HookError {
+            command: command.to_string(),
+            exit_code: None,
+            kind: HookErrorKind::SpawnFailed(e),
+        })?;
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    tracing::debug!(command = %command, "hook completed successfully");
+                    return Ok(());
+                }
+                let exit_code = status.code();
+                tracing::error!(command = %command, exit_code = ?exit_code, "hook exited with error");
+                return Err(HookError {
+                    command: command.to_string(),
+                    exit_code,
+                    kind: HookErrorKind::NonZeroExit,
+                });
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(HookError {
+                        command: command.to_string(),
+                        exit_code: None,
+                        kind: HookErrorKind::Timeout { timeout_secs },
+                    });
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => {
+                return Err(HookError {
+                    command: command.to_string(),
+                    exit_code: None,
+                    kind: HookErrorKind::SpawnFailed(e),
+                });
+            }
+        }
     }
 }
 
@@ -200,6 +306,14 @@ mod tests {
         let env = HookEnv::post_session(0, 0, "", "", None, 0, 0, false);
         assert_eq!(env.vars["HARNESS_EXIT_CODE"], "");
         assert_eq!(env.vars["HARNESS_COMMITTED"], "false");
+    }
+
+    #[test]
+    fn test_hook_env_post_integration() {
+        let env = HookEnv::post_integration("bd-123", "abc123");
+        assert_eq!(env.vars["BLACKSMITH_INTEGRATED_BEAD"], "bd-123");
+        assert_eq!(env.vars["BLACKSMITH_MAIN_COMMIT"], "abc123");
+        assert_eq!(env.vars.len(), 2);
     }
 
     #[test]
@@ -297,6 +411,39 @@ mod tests {
         runner.run_post_session(&env);
         let contents = std::fs::read_to_string(&output).unwrap();
         assert_eq!(contents.trim(), "/out.jsonl:42:9999:120:true");
+    }
+
+    #[test]
+    fn test_post_integration_hook_receives_env_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("env_output");
+        let runner = HookRunner::new(vec![], vec![]).with_post_integration(
+            vec![format!(
+                "echo $BLACKSMITH_INTEGRATED_BEAD:$BLACKSMITH_MAIN_COMMIT > {}",
+                output.display()
+            )],
+            1,
+        );
+        let env = HookEnv::post_integration("simple-agent-harness-m7xy", "deadbeef");
+        runner.run_post_integration(&env);
+        let contents = std::fs::read_to_string(&output).unwrap();
+        assert_eq!(contents.trim(), "simple-agent-harness-m7xy:deadbeef");
+    }
+
+    #[test]
+    fn test_post_integration_timeout_kills_process_and_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let runner = HookRunner::new(vec![], vec![]).with_post_integration(
+            vec![
+                "sleep 2".to_string(),
+                format!("touch {}", marker.display()),
+            ],
+            1,
+        );
+        let env = HookEnv::post_integration("bd-1", "abc");
+        runner.run_post_integration(&env);
+        assert!(marker.exists(), "later post-integration hook should still run");
     }
 
     #[test]

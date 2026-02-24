@@ -445,10 +445,22 @@ pub struct ShutdownConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(default)]
-#[derive(Default)]
 pub struct HooksConfig {
     pub pre_session: Vec<String>,
     pub post_session: Vec<String>,
+    pub post_integration: Vec<String>,
+    pub post_integration_timeout_secs: u64,
+}
+
+impl Default for HooksConfig {
+    fn default() -> Self {
+        Self {
+            pre_session: Vec::new(),
+            post_session: Vec::new(),
+            post_integration: Vec::new(),
+            post_integration_timeout_secs: 60,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -1211,6 +1223,8 @@ mod tests {
         assert_eq!(config.shutdown.stop_file, PathBuf::from("STOP"));
         assert!(config.hooks.pre_session.is_empty());
         assert!(config.hooks.post_session.is_empty());
+        assert!(config.hooks.post_integration.is_empty());
+        assert_eq!(config.hooks.post_integration_timeout_secs, 60);
         assert!(config.prompt.file.is_none());
         assert!(config.prompt.prepend_commands.is_empty());
         assert!(config.output.event_log.is_none());
@@ -1298,6 +1312,8 @@ stop_file = "HALT"
 [hooks]
 pre_session = ["echo pre"]
 post_session = ["echo post"]
+post_integration = ["echo integrated"]
+post_integration_timeout_secs = 15
 
 [prompt]
 file = "CUSTOM.md"
@@ -1322,6 +1338,8 @@ event_log = "harness-events.jsonl"
         assert_eq!(config.shutdown.stop_file, PathBuf::from("HALT"));
         assert_eq!(config.hooks.pre_session, vec!["echo pre"]);
         assert_eq!(config.hooks.post_session, vec!["echo post"]);
+        assert_eq!(config.hooks.post_integration, vec!["echo integrated"]);
+        assert_eq!(config.hooks.post_integration_timeout_secs, 15);
         assert_eq!(config.prompt.file, Some(PathBuf::from("CUSTOM.md")));
         assert_eq!(config.prompt.prepend_commands, vec!["date"]);
         assert_eq!(
