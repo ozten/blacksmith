@@ -242,9 +242,22 @@ pub fn default_commands(project_type: &ProjectType) -> Vec<DetectedCommand> {
 }
 
 const PROMPT_TEMPLATE: &str = include_str!("../templates/PROMPT.md.tmpl");
+const DEFAULT_PROMPT: &str = include_str!("../templates/DEFAULT_PROMPT.md");
 
 /// Marker header present in every valid PROMPT.md, used to validate LLM output.
 const PROMPT_MD_MARKER: &str = "# Task Execution Instructions";
+
+/// Check whether `ANTHROPIC_API_KEY` is set and non-empty.
+pub fn has_anthropic_api_key() -> bool {
+    std::env::var("ANTHROPIC_API_KEY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// Return the static default PROMPT.md content (no template variables, works for any project).
+pub fn default_prompt_md() -> &'static str {
+    DEFAULT_PROMPT
+}
 
 /// Look up a command by label from the detected commands, returning a fallback if not found.
 fn find_command<'a>(commands: &'a [DetectedCommand], label: &str, fallback: &'a str) -> &'a str {

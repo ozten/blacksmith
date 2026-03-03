@@ -247,6 +247,11 @@ mod tests {
         let (_dir, path) = test_db_path();
         // Should not error on empty db
         handle_list(&path, None, None).unwrap();
+
+        // Verify the database is genuinely empty
+        let conn = db::open_or_create(&path).unwrap();
+        let items = db::list_improvements(&conn, None, None).unwrap();
+        assert!(items.is_empty(), "fresh database should have no improvements");
     }
 
     #[test]

@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn list_and_show_do_not_error() {
+    fn list_and_show_return_correct_data() {
         let (_dir, db_path) = test_db_path();
         handle_add(
             &db_path,
@@ -185,7 +185,21 @@ mod tests {
         )
         .unwrap();
 
+        // Verify handle_list and handle_show don't error
         handle_list(&db_path, Some("simple-agent-harness-c34r"), 5).unwrap();
         handle_show(&db_path, Some("simple-agent-harness-c34r")).unwrap();
+
+        // Verify the data is actually correct via DB query
+        let conn = db::open_or_create(&db_path).unwrap();
+        let entries = db::list_progress_entries(&conn, Some("simple-agent-harness-c34r"), 5).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].bead_id.as_deref(), Some("simple-agent-harness-c34r"));
+        assert!(entries[0].body.contains("## Handoff"));
+        assert!(entries[0].body.contains("Next Y"));
+
+        let latest = db::latest_progress_entry(&conn, Some("simple-agent-harness-c34r")).unwrap();
+        let latest = latest.expect("should have a latest entry");
+        assert_eq!(latest.bead_id.as_deref(), Some("simple-agent-harness-c34r"));
+        assert!(latest.body.contains("## Handoff"));
     }
 }

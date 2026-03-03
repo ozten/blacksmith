@@ -389,15 +389,23 @@ mod tests {
             .find(|(p, _)| p.ends_with("god.rs"))
             .map(|(_, m)| m);
 
-        if let Some(gf) = god_file {
-            if gf.is_god_file {
-                assert!(gf.cluster_count >= 3);
-                let crate_metrics = &report.modules["crate"];
-                assert!(crate_metrics.god_file_count >= 1);
-            }
-        }
-        // The test validates that the aggregator correctly picks up god file results
-        // when the detector flags them. The exact threshold behavior is tested in god_file.rs.
+        let gf = god_file.expect("god.rs should be present in file metrics");
+        assert!(
+            gf.is_god_file,
+            "god.rs should be flagged as a god file (line_count={}, cluster_count={})",
+            gf.line_count, gf.cluster_count
+        );
+        assert!(
+            gf.cluster_count >= 3,
+            "god.rs should have at least 3 clusters, got {}",
+            gf.cluster_count
+        );
+        let crate_metrics = &report.modules["crate"];
+        assert!(
+            crate_metrics.god_file_count >= 1,
+            "crate module should report at least 1 god file, got {}",
+            crate_metrics.god_file_count
+        );
     }
 
     #[test]
