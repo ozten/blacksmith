@@ -52,6 +52,8 @@ pub enum CoordinatorExitReason {
     StopFile,
     /// SIGINT or SIGTERM received.
     Signal,
+    /// Agent authentication failed (invalid/expired API key).
+    AuthenticationFailed(String),
     /// Agent quota exhausted (not a transient rate limit).
     QuotaExhausted(String),
     /// Too many rapid consecutive session failures (operator intervention needed).
@@ -294,6 +296,41 @@ pub async fn run(
                         &db_conn,
                         config.workers.max,
                     );
+                    // Check for authentication failure (fatal — no point retrying)
+                    if let Some(auth_msg) =
+                        ratelimit::detect_auth_failure(&outcome.output_file)
+                    {
+                        let api_key_source = ratelimit::extract_api_key_source(&outcome.output_file)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        tracing::error!(
+                            worker_id = outcome.worker_id,
+                            api_key_source = %api_key_source,
+                            "authentication failed: {auth_msg}"
+                        );
+                        if !draining {
+                            eprintln!();
+                            eprintln!("ERROR: Authentication failed — {auth_msg}");
+                            eprintln!("       API key source: {api_key_source}");
+                            eprintln!();
+                            if api_key_source == "ANTHROPIC_API_KEY" {
+                                eprintln!("  Your ANTHROPIC_API_KEY is invalid or expired.");
+                                eprintln!("  To use your Claude Code subscription instead:");
+                                eprintln!("    unset ANTHROPIC_API_KEY");
+                                eprintln!();
+                                eprintln!("  Or set a valid API key:");
+                                eprintln!("    export ANTHROPIC_API_KEY=sk-ant-...");
+                            } else {
+                                eprintln!("  Check your agent credentials and configuration.");
+                            }
+                            eprintln!();
+                            draining = true;
+                            drain_reason = Some(CoordinatorExitReason::AuthenticationFailed(
+                                auth_msg.clone(),
+                            ));
+                            status.update(HarnessState::ShuttingDown);
+                        }
+                    }
+
                     // Check for quota exhaustion (hard limit, not transient rate limit)
                     if let Some(quota_msg) =
                         ratelimit::detect_quota_exhaustion(&outcome.output_file)

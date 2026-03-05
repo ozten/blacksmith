@@ -29,6 +29,17 @@ static QUOTA_EXHAUSTION_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     ]
 });
 
+/// Patterns that indicate authentication failure (invalid/expired API key).
+static AUTH_FAILURE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    vec![
+        Regex::new(r"(?i)invalid api key").unwrap(),
+        Regex::new(r"(?i)authentication_failed").unwrap(),
+        Regex::new(r"(?i)invalid x-api-key").unwrap(),
+        Regex::new(r"(?i)api key.*expired").unwrap(),
+        Regex::new(r"(?i)unauthorized.*api.key").unwrap(),
+    ]
+});
+
 /// Inspect a JSONL file for rate limit indicators.
 ///
 /// Returns `true` if the session ended with a rate limit error.
@@ -67,6 +78,90 @@ pub fn detect_quota_exhaustion(output_path: &Path) -> Option<String> {
     };
 
     detect_quota_in_content(&contents)
+}
+
+/// Inspect a JSONL file for authentication failure.
+///
+/// Returns `Some(message)` if an auth failure is detected, `None` otherwise.
+/// Auth failures are fatal — the API key is invalid/expired and retrying won't help.
+pub fn detect_auth_failure(output_path: &Path) -> Option<String> {
+    let contents = match std::fs::read_to_string(output_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %output_path.display(),
+                "failed to read output file for auth check"
+            );
+            return None;
+        }
+    };
+
+    detect_auth_failure_in_content(&contents)
+}
+
+/// Detect authentication failure in JSONL content.
+/// Checks both the `"error"` field on assistant messages and the result event text.
+fn detect_auth_failure_in_content(jsonl_content: &str) -> Option<String> {
+    for line in jsonl_content.lines().rev() {
+        // Claude format: assistant message with "error":"authentication_failed"
+        if line.contains("\"error\"") || line.contains("\"type\":\"result\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                // Check the "error" field on assistant messages
+                if let Some(error_str) = parsed["error"].as_str() {
+                    if matches_auth_patterns(error_str) {
+                        let msg = parsed["message"]["content"][0]["text"]
+                            .as_str()
+                            .unwrap_or(error_str);
+                        return Some(msg.to_string());
+                    }
+                }
+                // Check the "result" text on result events
+                let is_error = parsed["is_error"].as_bool().unwrap_or(false);
+                if is_error {
+                    if let Some(result_text) = parsed["result"].as_str() {
+                        if matches_auth_patterns(result_text) {
+                            return Some(result_text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        // Codex format: error events
+        if line.contains("\"type\":\"error\"") || line.contains("\"type\":\"turn.failed\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                let msg = parsed["message"]
+                    .as_str()
+                    .or_else(|| parsed["error"]["message"].as_str())
+                    .unwrap_or("");
+                if matches_auth_patterns(msg) {
+                    return Some(msg.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check text for authentication failure patterns.
+fn matches_auth_patterns(text: &str) -> bool {
+    AUTH_FAILURE_PATTERNS.iter().any(|p| p.is_match(text))
+}
+
+/// Extract `apiKeySource` from a JSONL session file's init event.
+///
+/// Returns the value of the `apiKeySource` field (e.g. "ANTHROPIC_API_KEY")
+/// or `None` if the init event doesn't contain one.
+pub fn extract_api_key_source(output_path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(output_path).ok()?;
+    for line in contents.lines() {
+        if line.contains("\"type\":\"system\"") && line.contains("\"subtype\":\"init\"") {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) {
+                return parsed["apiKeySource"].as_str().map(|s| s.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Detect rate limiting in JSONL content (any format).
@@ -441,6 +536,104 @@ mod tests {
         let path = dir.path().join("output.jsonl");
         std::fs::write(&path, r#"{"type":"error","message":"compilation failed"}"#).unwrap();
         assert!(detect_quota_exhaustion(&path).is_none());
+    }
+
+    // --- Authentication failure tests ---
+
+    #[test]
+    fn test_claude_auth_failure_detected_from_error_field() {
+        // Real-world Claude auth failure: assistant message with error field
+        let jsonl = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Invalid API key · Fix external API key"}]},"error":"authentication_failed"}
+{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Fix external API key"}"#;
+        let result = detect_auth_failure_in_content(jsonl);
+        assert!(result.is_some());
+        // Returns the error message text (from result event or error field)
+        let msg = result.unwrap();
+        assert!(
+            msg.contains("Invalid API key") || msg.contains("authentication_failed"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_claude_auth_failure_detected_from_result_text() {
+        let jsonl = result_event(true, "error", "Invalid API key");
+        let result = detect_auth_failure_in_content(&jsonl);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("Invalid API key"));
+    }
+
+    #[test]
+    fn test_auth_failure_invalid_x_api_key() {
+        let jsonl = result_event(true, "error", "Invalid x-api-key in request header");
+        assert!(detect_auth_failure_in_content(&jsonl).is_some());
+    }
+
+    #[test]
+    fn test_auth_failure_expired_key() {
+        let jsonl = result_event(true, "error", "Your API key has expired");
+        assert!(detect_auth_failure_in_content(&jsonl).is_some());
+    }
+
+    #[test]
+    fn test_successful_session_not_auth_failure() {
+        let jsonl = result_event(false, "success", "Implemented API key validation");
+        assert!(detect_auth_failure_in_content(&jsonl).is_none());
+    }
+
+    #[test]
+    fn test_normal_error_not_auth_failure() {
+        let jsonl = result_event(true, "error", "compilation failed");
+        assert!(detect_auth_failure_in_content(&jsonl).is_none());
+    }
+
+    #[test]
+    fn test_auth_failure_from_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("output.jsonl");
+        let content = r#"{"type":"assistant","error":"authentication_failed","message":{"content":[{"type":"text","text":"Invalid API key"}]}}
+{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Fix external API key"}"#;
+        std::fs::write(&path, content).unwrap();
+        assert!(detect_auth_failure(&path).is_some());
+    }
+
+    #[test]
+    fn test_auth_failure_missing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.jsonl");
+        assert!(detect_auth_failure(&path).is_none());
+    }
+
+    // --- API key source extraction tests ---
+
+    #[test]
+    fn test_extract_api_key_source_present() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("output.jsonl");
+        let content = r#"{"type":"system","subtype":"init","apiKeySource":"ANTHROPIC_API_KEY","session_id":"test"}
+{"type":"result","subtype":"success","is_error":false,"result":"Done"}"#;
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(
+            extract_api_key_source(&path),
+            Some("ANTHROPIC_API_KEY".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_api_key_source_not_present() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("output.jsonl");
+        let content = r#"{"type":"system","subtype":"init","session_id":"test"}
+{"type":"result","subtype":"success","is_error":false,"result":"Done"}"#;
+        std::fs::write(&path, content).unwrap();
+        assert_eq!(extract_api_key_source(&path), None);
+    }
+
+    #[test]
+    fn test_extract_api_key_source_missing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nonexistent.jsonl");
+        assert_eq!(extract_api_key_source(&path), None);
     }
 
     // --- Backoff tests (unchanged) ---

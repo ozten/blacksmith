@@ -312,6 +312,19 @@ pub fn display_status(
         println!("Consecutive rate limits: {}", data.consecutive_rate_limits);
     }
 
+    // API key source — derive sessions dir from status file's parent
+    if let Some(parent) = status_path.parent() {
+        let sessions_dir = parent.join("sessions");
+        if let Some(source) = latest_api_key_source(&sessions_dir) {
+            let label = if source == "ANTHROPIC_API_KEY" {
+                "ANTHROPIC_API_KEY (API billing)"
+            } else {
+                &source
+            };
+            println!("API key source: {}", label);
+        }
+    }
+
     Ok(true)
 }
 
@@ -448,6 +461,35 @@ fn count_failed_beads() -> usize {
         }
         _ => 0,
     }
+}
+
+/// Find the `apiKeySource` from the most recent session file in the sessions directory.
+fn latest_api_key_source(sessions_dir: &Path) -> Option<String> {
+    let mut entries: Vec<_> = std::fs::read_dir(sessions_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "jsonl")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Sort by modification time descending to find the most recent
+    entries.sort_by(|a, b| {
+        let t_a = a.metadata().and_then(|m| m.modified()).ok();
+        let t_b = b.metadata().and_then(|m| m.modified()).ok();
+        t_b.cmp(&t_a)
+    });
+
+    // Check the most recent file (or a few, in case the latest is empty/corrupt)
+    for entry in entries.iter().take(3) {
+        if let Some(source) = crate::ratelimit::extract_api_key_source(&entry.path()) {
+            return Some(source);
+        }
+    }
+    None
 }
 
 /// Format seconds (f64) as a compact human-readable duration.
