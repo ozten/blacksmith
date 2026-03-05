@@ -6,6 +6,18 @@
 - [beads](https://github.com/steveyegge/beads) (`bd`) installed and configured
 - An AI coding agent installed (Claude Code by default)
 
+> [!WARNING]
+> **Know how your tokens are being billed.** Blacksmith can run in two modes:
+>
+> **A) Claude Code subscription** — Uses your Claude Code / Claude Max subscription. No per-token cost beyond your subscription.
+>
+> **B) API keys** — If `ANTHROPIC_API_KEY` is set in your environment, Claude Code will use API keys and you **will be billed per token**. This can get expensive fast with automated loops.
+>
+> If you intend to use your subscription, unset the API key first:
+> ```bash
+> unset ANTHROPIC_API_KEY
+> ```
+
 ## Install
 
 ```bash

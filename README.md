@@ -3,6 +3,19 @@
 > [!NOTE]
 > Blacksmith is under active development and the API surface is not yet stable. We're iterating quickly — expect breaking changes in early releases. That said, it's fully functional today and we'd love for you to try it out.
 
+> [!WARNING]
+> **Know how your tokens are being billed.** Blacksmith can run in two modes:
+>
+> **A) Claude Code subscription** — Uses your Claude Code / Claude Max subscription. No per-token cost beyond your subscription.
+>
+> **B) API keys** — If `ANTHROPIC_API_KEY` is set in your environment, Claude Code will use API keys and you **will be billed per token**. This can get expensive fast, especially with multi-agent or long-running loops.
+>
+> If you intend to use your Claude Code subscription, make sure to unset the API key first:
+> ```bash
+> unset ANTHROPIC_API_KEY
+> ```
+> Run this in the terminal where you launch blacksmith. Check with `echo $ANTHROPIC_API_KEY` to confirm it's empty.
+
 A supervised agent harness that runs AI coding agents in a loop — dispatching prompts, monitoring sessions, enforcing health invariants, collecting metrics, and repeating.
 
 Currently, blacksmith depends on your using `bd` to record tasks you would like accomplished.
